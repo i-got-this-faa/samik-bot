@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jR4dh3y/samik-bot/internal/config"
 )
 
 func TestExtractTextFromJSONL(t *testing.T) {
@@ -43,7 +45,7 @@ func TestExtractTextFromJSONL(t *testing.T) {
 func TestOpenCodeConfigUsesOnlyV2Permissions(t *testing.T) {
 	cfg := openCodeConfig("opencode/big-pickle")
 	if _, ok := cfg["permission"]; ok {
-		t.Fatal("V1 permission field must not be emitted")
+		t.Fatal("legacy permission field must not be emitted")
 	}
 	rules, ok := cfg["permissions"].([]map[string]string)
 	if !ok || len(rules) == 0 {
@@ -55,7 +57,7 @@ func TestOpenCodeConfigUsesOnlyV2Permissions(t *testing.T) {
 	seen := map[string]bool{}
 	for _, rule := range rules {
 		if rule["action"] == "bash" || rule["action"] == "task" {
-			t.Fatalf("V1 action emitted: %#v", rule)
+			t.Fatalf("legacy action emitted: %#v", rule)
 		}
 		seen[rule["action"]] = true
 	}
@@ -73,9 +75,9 @@ func TestOpenCodeConfigUsesOnlyV2Permissions(t *testing.T) {
 		t.Fatalf("reviewer config = %#v", agents["reviewer"])
 	}
 	if _, ok := reviewer["permission"]; ok {
-		t.Fatal("V1 reviewer permission field must not be emitted")
+		t.Fatal("legacy reviewer permission field must not be emitted")
 	}
-	// The current beta silently drops the whole configuration, agents
+	// The CLI silently drops the whole configuration, agents
 	// included, when any plugins entry is present (observed with ["-*"]).
 	if plugins, ok := cfg["plugins"]; ok {
 		t.Fatalf("plugins key must not be emitted, got %#v", plugins)
@@ -100,9 +102,9 @@ func TestOpencodeRunArgsPutStandaloneAfterRun(t *testing.T) {
 }
 
 func TestAgentRunArgsSelectsByEngine(t *testing.T) {
-	opts := Options{Model: "opencode/big-pickle", Prompt: "review"}
+	opts := Options{Model: "opencode/paid-model", Prompt: "review"}
 	if got := agentRunArgs(opts); got[0] != "run" {
-		t.Fatalf("default engine args = %q, want the opencode2 run form", got)
+		t.Fatalf("default engine args = %q, want the OpenCode run form", got)
 	}
 	opts.Engine = EnginePi
 	if got := agentRunArgs(opts); got[0] != "--print" {
@@ -111,10 +113,10 @@ func TestAgentRunArgsSelectsByEngine(t *testing.T) {
 }
 
 func TestPiRunArgsKeepReviewerReadOnlyAndStateless(t *testing.T) {
-	got := piRunArgs(Options{Model: "opencode/big-pickle", Prompt: "review it"})
+	got := piRunArgs(Options{Model: "opencode/paid-model", Prompt: "review it"})
 	wantPrefix := []string{
 		"--print",
-		"--model", "opencode/big-pickle",
+		"--model", "opencode/paid-model",
 		"--tools", "read,grep,find,ls",
 		"--no-extensions",
 		"--no-skills",
@@ -160,13 +162,13 @@ func TestSandboxCommandBindsHostDataDir(t *testing.T) {
 	files := &sandboxFiles{config: mkfile("opencode.json"), auth: mkfile("auth.json")}
 	dataDir := filepath.Join(dir, "xdg-data")
 	args := sandboxCommand(
-		sandboxRuntime{engine: EngineOpenCode2, bwrap: "bwrap", runtimeDir: dir, binary: "/opt/opencode-runtime/bin/opencode2"},
+		sandboxRuntime{engine: EngineOpenCode, bwrap: "bwrap", runtimeDir: dir, binary: "/opt/opencode-runtime/bin/opencode2"},
 		filepath.Join(dir, "checkout"), files, dataDir, []string{"run"},
 	)
 	bound := false
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--tmpfs" && args[i+1] == "/xdg-data" {
-			t.Fatal("xdg-data must not be tmpfs: the beta cannot create its session database there")
+			t.Fatal("xdg-data must not be tmpfs: OpenCode cannot create its session database there")
 		}
 		if args[i] == "--bind" && args[i+1] == dataDir && args[i+2] == "/xdg-data" {
 			bound = true
@@ -432,7 +434,7 @@ func testBubblewrapPath() (string, error) {
 // fakeRuntime creates a self-contained trusted runtime. Its scripts run with
 // a copied POSIX shell so the production sandbox need not expose host /usr.
 func fakeRuntime(t *testing.T, script string, extraBinaries ...string) (bin, runtimeDir string) {
-	return fakeEngineRuntime(t, EngineOpenCode2, script, extraBinaries...)
+	return fakeEngineRuntime(t, EngineOpenCode, script, extraBinaries...)
 }
 
 // fakePiRuntime stages a fake pi executable under the pi runtime root.
@@ -442,7 +444,7 @@ func fakePiRuntime(t *testing.T, script string) (bin, runtimeDir string) {
 
 func fakeEngineRuntime(t *testing.T, engine, script string, extraBinaries ...string) (bin, runtimeDir string) {
 	t.Helper()
-	root, name := sandboxOpenCodeRoot, "opencode2"
+	root, name := sandboxOpenCodeRoot, "opencode"
 	if engine == EnginePi {
 		root, name = sandboxPiRoot, "pi"
 	}
@@ -616,7 +618,7 @@ func initRemote(t *testing.T, extraFiles map[string][]byte) (string, string) {
 func runOptions(bin, runtimeDir, remote, head string) Options {
 	bubblewrapBin, _ := testBubblewrapPath()
 	return Options{
-		Engine:             EngineOpenCode2,
+		Engine:             EngineOpenCode,
 		Bin:                bin,
 		RuntimeDir:         runtimeDir,
 		RunArgs:            []string{"--standalone"},
@@ -643,7 +645,7 @@ func piRunOptions(bin, runtimeDir, remote, head string) Options {
 }
 
 func TestSandboxFilesUseValidJSON(t *testing.T) {
-	files, err := newSandboxFiles(t.TempDir(), `sk-test-\"quoted\"`, EngineOpenCode2, "opencode/big-pickle")
+	files, err := newSandboxFiles(t.TempDir(), `sk-test-\"quoted\"`, EngineOpenCode, "opencode/big-pickle")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +669,7 @@ func TestSandboxFilesUseValidJSON(t *testing.T) {
 }
 
 func TestSandboxFilesForPiUseZenCredentialStore(t *testing.T) {
-	files, err := newSandboxFiles(t.TempDir(), `sk-test-\"quoted\"`, EnginePi, "opencode/big-pickle")
+	files, err := newSandboxFiles(t.TempDir(), `sk-test-\"quoted\"`, EnginePi, "opencode/paid-model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,14 +761,14 @@ func TestOpenCodeConfigDeclaresOrcaRouterProvider(t *testing.T) {
 	}
 }
 
-func TestSandboxFilesForOpenCode2DeclareOrcaRouterProvider(t *testing.T) {
-	files, err := newSandboxFiles(t.TempDir(), "sk-orca-test", EngineOpenCode2, "orcarouter/auto")
+func TestSandboxFilesForOpenCodeDeclareOrcaRouterProvider(t *testing.T) {
+	files, err := newSandboxFiles(t.TempDir(), "sk-orca-test", EngineOpenCode, "orcarouter/auto")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer files.Close()
 	if files.models != nil {
-		t.Fatal("opencode2 runs must not produce a pi models.json")
+		t.Fatal("OpenCode runs must not produce a pi models.json")
 	}
 	config, err := os.ReadFile(files.config.Name())
 	if err != nil {
@@ -964,13 +966,13 @@ func TestPreflightRunsOpenCodeInsideSandbox(t *testing.T) {
 	requireBubblewrap(t)
 	bin, runtimeDir := fakeRuntime(t, `
 set -eu
-if [ "$1" = --version ]; then printf '%s\n' 'opencode2 vtest'; elif [ "$1" = run ]; then [ "$2" = --standalone ] || exit 2; else exit 1; fi
+if [ "$1" = --version ]; then printf '%s\n' 'opencode vtest'; elif [ "$1" = run ]; then [ "$2" = --standalone ] || exit 2; else exit 1; fi
 `)
 	bubblewrapBin, err := testBubblewrapPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Preflight(bin, runtimeDir, bubblewrapBin, EngineOpenCode2, "opencode/big-pickle"); err != nil {
+	if err := Preflight(bin, runtimeDir, bubblewrapBin, EngineOpenCode, "opencode/big-pickle"); err != nil {
 		t.Fatalf("Preflight() error = %v", err)
 	}
 }
@@ -987,8 +989,14 @@ else exit 1; fi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Preflight(bin, runtimeDir, bubblewrapBin, EnginePi, "opencode/big-pickle"); err != nil {
+	if err := Preflight(bin, runtimeDir, bubblewrapBin, EnginePi, "opencode/paid-model"); err != nil {
 		t.Fatalf("Preflight() error = %v", err)
+	}
+}
+
+func TestPreflightRejectsOpenCodeZenFreeModelForPi(t *testing.T) {
+	if err := Preflight("pi", t.TempDir(), "/usr/bin/bwrap", EnginePi, "opencode/big-pickle"); !errors.Is(err, config.ErrZenFreeModelRequiresOpenCode) {
+		t.Fatalf("Preflight() error = %v, want OpenCode-only free-model policy", err)
 	}
 }
 
@@ -1047,8 +1055,18 @@ func TestRunRejectsUnknownEngine(t *testing.T) {
 	bin, runtimeDir := fakeRuntime(t, isolatedReviewerScript)
 	opts := runOptions(bin, runtimeDir, remote, head)
 	opts.Engine = "claude"
-	if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "engine must be opencode2 or pi") {
+	if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "engine must be opencode or pi") {
 		t.Fatalf("error = %v, want engine rejection", err)
+	}
+}
+
+func TestRunnerNormalizesOpenCodeCompatibilityEngine(t *testing.T) {
+	if got := normalizeEngine(EngineOpenCode2Compat); got != EngineOpenCode {
+		t.Fatalf("normalizeEngine(%q) = %q, want %q", EngineOpenCode2Compat, got, EngineOpenCode)
+	}
+	if !isEngineBinName(EngineOpenCode, "/opt/opencode-runtime/bin/opencode") ||
+		!isEngineBinName(EngineOpenCode, "/opt/opencode-runtime/bin/opencode2") {
+		t.Fatal("OpenCode runtime must accept both stable and compatibility executable names")
 	}
 }
 

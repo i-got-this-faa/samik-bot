@@ -273,10 +273,11 @@ func (s *Server) handleDeleteKey(u *store.User, w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "deleted"})
 }
 
-// handleGetSettings returns admin settings (currently the default model).
+// handleGetSettings returns the active engine and admin-selected default model.
 func (s *Server) handleGetSettings(u *store.User, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
-		"model": s.st.GetSetting("model", s.cfg.DefaultModel),
+		"engine": config.NormalizeEngine(s.cfg.ReviewEngine),
+		"model":  s.st.GetSetting("model", s.cfg.DefaultModel),
 	})
 }
 
@@ -286,6 +287,14 @@ func (s *Server) handleSetSettings(u *store.User, w http.ResponseWriter, r *http
 		Model string `json:"model"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil || !config.ValidModel(body.Model) {
+		writeErr(w, http.StatusBadRequest, "model required")
+		return
+	}
+	if err := config.ValidateModelForEngine(s.cfg.ReviewEngine, body.Model); err != nil {
+		if errors.Is(err, config.ErrZenFreeModelRequiresOpenCode) {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "model required")
 		return
 	}

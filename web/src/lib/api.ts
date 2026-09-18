@@ -100,6 +100,7 @@ export interface ZenKey {
 }
 
 export interface Settings {
+  engine: string;
   model: string;
 }
 

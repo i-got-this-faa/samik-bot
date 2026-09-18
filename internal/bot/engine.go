@@ -726,6 +726,16 @@ func (e *Engine) processClaimedReview(ctx context.Context, r *store.Review) {
 		}
 		return
 	}
+	if err := config.ValidateModelForEngine(e.cfg.ReviewEngine, model); err != nil {
+		cause, message := "invalid_model", invalidModelMessage
+		if errors.Is(err, config.ErrZenFreeModelRequiresOpenCode) {
+			cause, message = "zen_free_model_requires_opencode", err.Error()
+		}
+		if e.failReview(r, log, cause, message) {
+			e.signalReviewFailure(ctx, token, r, log)
+		}
+		return
+	}
 	_, agentOut, err := e.runWithPool(ctx, token, r, model, diff, log)
 	if err != nil {
 		e.handleReviewError(ctx, token, r, log, err)
@@ -775,6 +785,9 @@ func (e *Engine) processClaimedReview(ctx context.Context, r *store.Review) {
 // runWithPool runs the agent, retrying once on a quota failure with a second
 // key. It rechecks entitlement and the execution fence before consuming a key.
 func (e *Engine) runWithPool(ctx context.Context, token string, r *store.Review, model string, diff []byte, log *slog.Logger) (*store.ZenKey, string, error) {
+	if err := config.ValidateModelForEngine(e.cfg.ReviewEngine, model); err != nil {
+		return nil, "", err
+	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := e.reviewSideEffectError(ctx, r); err != nil {
@@ -802,7 +815,7 @@ func (e *Engine) runWithPool(ctx context.Context, token string, r *store.Review,
 			return nil, "", err
 		}
 		engine, bin, runtimeDir := e.cfg.AgentRuntime()
-		// The opencode isolation flags belong to the opencode2 engine alone; a
+		// The OpenCode isolation flags belong to the OpenCode engine alone; a
 		// pi run must never inherit them even if both configs are populated.
 		runArgs := e.cfg.OpenCodeArgs
 		if engine == config.EnginePi {
@@ -1217,6 +1230,8 @@ func reviewErrorClass(err error, engine string) string {
 		return "output_too_large"
 	case errors.Is(err, runner.ErrSandboxUnavailable):
 		return "sandbox_unavailable"
+	case errors.Is(err, config.ErrZenFreeModelRequiresOpenCode):
+		return "zen_free_model_requires_opencode"
 	case errors.Is(err, pool.ErrEmpty):
 		return "no_key_available"
 	case errors.Is(err, store.ErrReviewNotReady):

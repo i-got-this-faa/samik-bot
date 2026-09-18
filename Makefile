@@ -1,7 +1,7 @@
 GO ?= go
 BUN ?= bun
 MISE ?= mise
-OPENCODE_BIN ?= opencode2
+OPENCODE_BIN ?= opencode
 PI_BIN ?= pi
 
 WEB_DIR := web
@@ -15,7 +15,7 @@ BINARY := $(BIN_DIR)/samik-bot
 help:
 	@printf '%s\n' 'Targets:' \
 		'  make setup       Install repository-pinned Go/Bun and dependencies' \
-		'  make opencode-check  Verify the installed OpenCode 2 beta CLI' \
+		'  make opencode-check  Verify the installed stable OpenCode CLI' \
 		'  make pi-check    Verify the installed pi coding agent CLI' \
 		'  make check       Verify formatting, Go code, frontend, and binary build' \
 		'  make build       Build the embedded dashboard and bin/samik-bot' \
@@ -34,7 +34,7 @@ install:
 
 opencode-check:
 	@command -v "$(OPENCODE_BIN)" >/dev/null 2>&1 || { \
-		printf '%s\n' "OpenCode binary '$(OPENCODE_BIN)' was not found; install the supported OpenCode 2 beta CLI or set OPENCODE_BIN."; \
+		printf '%s\n' "OpenCode binary '$(OPENCODE_BIN)' was not found; install the supported OpenCode CLI or set OPENCODE_BIN."; \
 		exit 1; \
 	}
 	@"$(OPENCODE_BIN)" --version

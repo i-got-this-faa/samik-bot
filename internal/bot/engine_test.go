@@ -200,7 +200,7 @@ func TestHeadChangeSkipsAllResultComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := NewEngine(&config.Config{
-		OpenCodeBin:     "opencode2",
+		OpenCodeBin:     "opencode",
 		OpenCodeArgs:    []string{"--standalone"},
 		DefaultModel:    "opencode/reviewer",
 		AdminGitHubIDs:  []int64{42},
@@ -394,12 +394,30 @@ func TestRunWithPoolRequiresCurrentReviewLeaseBeforeOpenCode(t *testing.T) {
 	engine.startMu.Unlock()
 	defer st.ReleaseServiceLease(lease.OwnerToken, lease.Fence)
 
-	_, _, err = engine.runWithPool(context.Background(), "installation-token", claimed, "model", nil, engine.log)
+	_, _, err = engine.runWithPool(context.Background(), "installation-token", claimed, "orcarouter/model", nil, engine.log)
 	if !errors.Is(err, store.ErrReviewLeaseLost) {
 		t.Fatalf("runWithPool error = %v, want review lease loss", err)
 	}
 	if runCalled {
 		t.Fatal("OpenCode runner was called after the review lease was lost")
+	}
+}
+
+func TestRunWithPoolRejectsFreeZenModelForPiBeforeRunner(t *testing.T) {
+	st := testStoreForEngine(t)
+	engine := NewEngine(&config.Config{ReviewEngine: config.EnginePi}, st, nil, pool.New(st, time.Hour), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runCalled := false
+	engine.run = func(context.Context, runner.Options) (string, error) {
+		runCalled = true
+		return "unexpected", nil
+	}
+
+	_, _, err := engine.runWithPool(context.Background(), "", nil, "opencode/big-pickle", nil, engine.log)
+	if !errors.Is(err, config.ErrZenFreeModelRequiresOpenCode) {
+		t.Fatalf("runWithPool error = %v, want OpenCode-only free-model policy", err)
+	}
+	if runCalled {
+		t.Fatal("runner was called for a free Zen model under pi")
 	}
 }
 
@@ -717,7 +735,7 @@ func newReviewFailureHarness(t *testing.T, runErr error, logOut *bytes.Buffer) (
 		logger = slog.New(slog.NewTextHandler(logOut, nil))
 	}
 	eng := NewEngine(&config.Config{
-		OpenCodeBin:     "opencode2",
+		OpenCodeBin:     "opencode",
 		OpenCodeArgs:    []string{"--standalone"},
 		DefaultModel:    "opencode/reviewer",
 		AdminGitHubIDs:  []int64{42},

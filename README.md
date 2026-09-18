@@ -5,7 +5,7 @@
 PR review bot powered by AI coding agents running inside hardened Bubblewrap sandboxes. Mention `@samik-bot` on a pull request and it runs an agentic review against the PR diff, posting a summary comment with a Mermaid sequence diagram followed by inline diff findings.
 
 Preconfigured for [OrcaRouter](https://www.orcarouter.ai) (`orcarouter/auto`) with dual-engine support:
-- [OpenCode 2](https://opencode.ai/v2/docs) (`opencode2`, default)
+- [OpenCode V2](https://opencode.ai/v2/docs) (`opencode`, default; `opencode2` remains a compatibility name)
 - [pi](https://github.com/earendil-works/pi) (`pi`, lightweight Node agent)
 
 > **Engines & Gateways.** Reviews run under Bubblewrap isolation with read-only repository access. Models use `provider/model` identifiers. `orcarouter/…` models route through [OrcaRouter](https://www.orcarouter.ai) (OpenAI-compatible gateway at `https://api.orcarouter.ai/v1`). `opencode/…` models route through OpenCode Zen. Keys are encrypted at rest in SQLite and injected only into the sandboxed agent's isolated credential store.
@@ -46,27 +46,27 @@ the next startup.
 ## Local setup
 
 Install [Mise](https://mise.jdx.dev/) first. The repository pins Go and Bun in `mise.toml`; do not
-rely on whichever versions happen to be globally installed. Install the current supported OpenCode
-2 beta CLI separately, package it with its dependencies in a trusted runtime directory, and install
-Bubblewrap on the Linux host before attempting a live review. The default `OPENCODE_BIN=opencode2`
-is resolved as `$OPENCODE_RUNTIME_DIR/bin/opencode2`, not from an arbitrary application `PATH`.
-Follow the [OpenCode 2 beta installation guide](https://opencode.ai/v2/docs) instead of assuming a
-V1 `opencode` installation or an unsupported beta packaging method.
+rely on whichever versions happen to be globally installed. Install the supported stable OpenCode
+V2 CLI separately, package it with its dependencies in a trusted runtime directory, and install
+Bubblewrap on the Linux host before attempting a live review. The default `OPENCODE_BIN=opencode`
+is resolved as `$OPENCODE_RUNTIME_DIR/bin/opencode`, not from an arbitrary application `PATH`.
+The compatibility executable name `opencode2` is also accepted. Follow the [OpenCode V2
+installation guide](https://opencode.ai/v2/docs) and pin the release used by the runtime image.
 
 `make setup` installs the repository-pinned Go/Bun toolchain and application dependencies only; it
-intentionally does not install the external OpenCode beta CLI, Bubblewrap, or any credentials. After
-staging `opencode2`, confirm the non-interactive automation entry point before configuring the
+intentionally does not install the external OpenCode CLI, Bubblewrap, or any credentials. After
+staging `opencode`, confirm the non-interactive automation entry point before configuring the
 service:
 
 ```bash
 make setup
-OPENCODE_BIN=/opt/opencode-runtime/bin/opencode2 mise exec -- make opencode-check
+OPENCODE_BIN=/opt/opencode-runtime/bin/opencode mise exec -- make opencode-check
 cp .env.example .env
 # Edit .env with the required GitHub, ID allowlist, sandbox, session, and model values.
 mise exec -- make run-local
 ```
 
-`opencode-check` runs `opencode2 --version` and `opencode2 run --help`; it does not call a model,
+`opencode-check` runs the configured OpenCode binary with `--version` and `run --help`; it does not call a model,
 validate the Bubblewrap sandbox, or need a gateway API key. `make run-local` loads `.env` only for a
 local POSIX-shell run. The binary itself reads process environment variables and never parses `.env`;
 production must inject values through its secret manager. The web UI is at `$PUBLIC_URL` (`/`
@@ -76,11 +76,13 @@ landing, `/dashboard` reviews, `/admin/keys`, `/admin/settings`). Health check: 
 ### Selecting the pi reviewer engine
 
 Set `REVIEW_ENGINE=pi` (plus `PI_RUNTIME_DIR`, and optionally `PI_BIN`) to run
-[pi](https://github.com/earendil-works/pi) instead of `opencode2`. The OpenCode configuration
+[pi](https://github.com/earendil-works/pi) instead of `opencode`. The OpenCode configuration
 above stays valid and untouched — the two engines are configured, staged, and validated separately,
 so you can switch back with one env var. Both engines use the same pooled gateway keys and the same
-`ZEN_DEFAULT_MODEL` / dashboard model setting in `provider/model` form; for free models pick a Zen
-`-free` model ID (for example `opencode/big-pickle`).
+`ZEN_DEFAULT_MODEL` / dashboard model setting in `provider/model` form. OpenCode Zen free models
+(including recognized IDs such as `opencode/big-pickle` and IDs ending in `-free` or
+`-free:global`) can run only with the OpenCode reviewer; pi supports paid Zen models and
+OrcaRouter models.
 
 Stage a pi runtime directory the same way as the OpenCode runtime: an absolute trusted directory
 (mounted read-only, no symlinked/group-writable/world-writable entries) containing `bin/pi` and
@@ -126,7 +128,7 @@ env_key  = "ORCA_KEY"
 ```
 
 Both reviewer engines support OrcaRouter seamlessly:
-- **`opencode2`**: Dynamically receives a custom `orcarouter` provider in its sandbox `opencode.json` (`@ai-sdk/openai-compatible` at `https://api.orcarouter.ai/v1`) with the pooled key injected via the isolated auth store.
+- **`opencode`**: Dynamically receives a custom `orcarouter` provider in its sandbox `opencode.json` (`@ai-sdk/openai-compatible` at `https://api.orcarouter.ai/v1`) with the pooled key injected via the isolated auth store. The `opencode2` executable name is compatible.
 - **`pi`**: Dynamically receives a custom `orcarouter` provider in `models.json` under its isolated sandbox directory (`baseUrl: https://api.orcarouter.ai/v1`, using OpenAI-compatible chat completions) alongside its auth store.
 
 To route reviews through OrcaRouter, keep the default `ZEN_DEFAULT_MODEL=orcarouter/auto` (or switch model dynamically at `/admin/settings`), and connect or add OrcaRouter API keys.
@@ -227,9 +229,9 @@ commenters get a register-here reply.
 | `USER_REVIEWS_PER_HOUR` | no | `6` | Per-requester admission limit; must be at least 1 |
 | `REPO_REVIEWS_PER_HOUR` | no | `30` | Per-repository admission limit; must be at least 1 |
 | `MAX_ACTIVE_REVIEWS` | no | `50` | Maximum queued or running reviews; must be at least 1 |
-| `OPENCODE_BIN` | for the `opencode2` engine | `opencode2` | Must name an OpenCode 2 `opencode2` executable; an absolute path must be inside the runtime directory |
-| `OPENCODE_RUNTIME_DIR` | for the `opencode2` engine | — | Absolute trusted runtime root; the default binary is `$OPENCODE_RUNTIME_DIR/bin/opencode2` |
-| `REVIEW_ENGINE` | no | `opencode2` | Reviewer engine: `opencode2` or `pi`; each engine's runtime config is validated and staged separately |
+| `OPENCODE_BIN` | for the `opencode` engine | `opencode` | Must name an OpenCode `opencode` or `opencode2` executable; an absolute path must be inside the runtime directory |
+| `OPENCODE_RUNTIME_DIR` | for the `opencode` engine | — | Absolute trusted runtime root; the default binary is `$OPENCODE_RUNTIME_DIR/bin/opencode` |
+| `REVIEW_ENGINE` | no | `opencode` | Reviewer engine: `opencode` or `pi`; `opencode2` is accepted for compatibility, and each engine's runtime config is validated and staged separately |
 | `PI_BIN` | for the `pi` engine | `pi` | Must name a `pi` executable; an absolute path must be inside the pi runtime directory |
 | `PI_RUNTIME_DIR` | for the `pi` engine | — | Absolute trusted runtime root holding `bin/pi`, `bin/node`, and the pi package files |
 | `BUBBLEWRAP_BIN` | yes | — | Bubblewrap executable path or command resolving to a trusted executable |
@@ -252,7 +254,7 @@ must be retained together; replacing the secret makes existing stored keys unrea
 ## Deployment and operations
 
 Read [deployment and operations](docs/operations.md) before exposing the webhook. It covers HTTPS,
-secret handling, persistent SQLite storage, supported OpenCode 2 beta runtime expectations, key-pool
+secret handling, persistent SQLite storage, supported OpenCode V2 runtime expectations, key-pool
 governance, backups, and the single-replica deployment constraint.
 
 ## API (dashboard)
@@ -273,7 +275,7 @@ All JSON, session cookie `samik_session`:
 - `internal/gh` — App JWT → installation token, REST (PR/files/diff/comments/reactions),
   webhook HMAC, OAuth exchange; `internal/server` — webhook handler, OAuth, admin JSON API, SPA
 - `internal/pool` — least-used eligible-key selection + configurable cooldown; `internal/runner` —
-  shallow clone + Bubblewrap sandbox + isolated reviewer exec (`opencode2` or pi) + final-message extraction
+  shallow clone + Bubblewrap sandbox + isolated reviewer exec (`opencode` or pi) + final-message extraction
 - `internal/review` — prompt contract, tolerant findings parser, diff→line mapping
 - `internal/bot` — engine: fetch → runWithPool (one quota retry) → prepare and post the summary
   publication before inline findings → finish/fail
