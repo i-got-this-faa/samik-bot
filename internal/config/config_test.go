@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -69,7 +70,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("USER_REVIEWS_PER_HOUR", "6")
 	t.Setenv("REPO_REVIEWS_PER_HOUR", "30")
 	t.Setenv("MAX_ACTIVE_REVIEWS", "50")
-	t.Setenv("OPENCODE_BIN", "opencode2")
+	t.Setenv("OPENCODE_BIN", "opencode")
 	t.Setenv("OPENCODE_RUNTIME_DIR", "/opt/opencode-runtime")
 	t.Setenv("BUBBLEWRAP_BIN", "/usr/bin/bwrap")
 }
@@ -171,7 +172,7 @@ func TestLoadRejectsMalformedGitHubIDLists(t *testing.T) {
 	}
 }
 
-func TestLoadUsesDefaultsAndStandaloneForOpenCode2(t *testing.T) {
+func TestLoadUsesStableOpenCodeDefaultsAndStandalone(t *testing.T) {
 	setRequiredEnv(t)
 	for _, key := range []string{
 		"PORT",
@@ -196,8 +197,11 @@ func TestLoadUsesDefaultsAndStandaloneForOpenCode2(t *testing.T) {
 	if cfg.Port != "8080" || cfg.PublicURL != "http://localhost:8080" || cfg.DBPath != "samik-bot.db" {
 		t.Fatalf("unexpected network/database defaults: port=%q publicURL=%q dbPath=%q", cfg.Port, cfg.PublicURL, cfg.DBPath)
 	}
-	if cfg.BotUsername != "samik-bot" || cfg.OpenCodeBin != "opencode2" {
+	if cfg.BotUsername != "samik-bot" || cfg.OpenCodeBin != "opencode" {
 		t.Fatalf("unexpected bot/runtime defaults: bot=%q bin=%q", cfg.BotUsername, cfg.OpenCodeBin)
+	}
+	if cfg.ReviewEngine != EngineOpenCode {
+		t.Fatalf("ReviewEngine = %q, want canonical OpenCode", cfg.ReviewEngine)
 	}
 	if cfg.ReviewConcurrency != 2 || cfg.ReviewTimeout != 20*time.Minute || cfg.ZenCooldown != time.Hour ||
 		cfg.UserReviewsPerHour != 6 || cfg.RepoReviewsPerHour != 30 || cfg.MaxActiveReviews != 50 {
@@ -209,7 +213,7 @@ func TestLoadUsesDefaultsAndStandaloneForOpenCode2(t *testing.T) {
 	}
 }
 
-func TestLoadUsesStandaloneForOpenCode2Path(t *testing.T) {
+func TestLoadAcceptsOpenCodeCompatibilityPath(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("OPENCODE_BIN", "/opt/opencode-runtime/bin/opencode2")
 
@@ -219,6 +223,23 @@ func TestLoadUsesStandaloneForOpenCode2Path(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.OpenCodeArgs, []string{"--standalone"}) {
 		t.Fatalf("OpenCode args = %v, want [--standalone]", cfg.OpenCodeArgs)
+	}
+}
+
+func TestLoadCanonicalizesOpenCodeCompatibilityEngine(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("REVIEW_ENGINE", EngineOpenCode2Compat)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReviewEngine != EngineOpenCode {
+		t.Fatalf("ReviewEngine = %q, want canonical OpenCode", cfg.ReviewEngine)
+	}
+	engine, bin, _ := cfg.AgentRuntime()
+	if engine != EngineOpenCode || bin != "opencode" {
+		t.Fatalf("AgentRuntime() = %q %q, want canonical OpenCode with stable binary", engine, bin)
 	}
 }
 
@@ -256,15 +277,15 @@ func TestLoadKeepsOpenCodeEngineSeparateFromPiConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ReviewEngine != EngineOpenCode2 {
-		t.Fatalf("ReviewEngine = %q, want the opencode2 default", cfg.ReviewEngine)
+	if cfg.ReviewEngine != EngineOpenCode {
+		t.Fatalf("ReviewEngine = %q, want the opencode default", cfg.ReviewEngine)
 	}
 	if !reflect.DeepEqual(cfg.OpenCodeArgs, []string{"--standalone"}) {
 		t.Fatalf("OpenCode args = %v, want [--standalone]", cfg.OpenCodeArgs)
 	}
 	engine, bin, runtimeDir := cfg.AgentRuntime()
-	if engine != EngineOpenCode2 || bin != "opencode2" || runtimeDir != "/opt/opencode-runtime" {
-		t.Fatalf("AgentRuntime() = %q %q %q, want the opencode2 staging", engine, bin, runtimeDir)
+	if engine != EngineOpenCode || bin != "opencode" || runtimeDir != "/opt/opencode-runtime" {
+		t.Fatalf("AgentRuntime() = %q %q %q, want the opencode staging", engine, bin, runtimeDir)
 	}
 }
 
@@ -295,6 +316,17 @@ func TestLoadRejectsPiBinNamedForAnotherEngine(t *testing.T) {
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PI_BIN") {
 			t.Fatalf("PI_BIN %q error = %v, want naming rejection", value, err)
 		}
+	}
+}
+
+func TestLoadRejectsFreeZenModelForPi(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("REVIEW_ENGINE", EnginePi)
+	t.Setenv("PI_RUNTIME_DIR", "/opt/pi-runtime")
+	t.Setenv("ZEN_DEFAULT_MODEL", "opencode/big-pickle")
+
+	if _, err := Load(); !errors.Is(err, ErrZenFreeModelRequiresOpenCode) {
+		t.Fatalf("Load() error = %v, want OpenCode-only free-model policy", err)
 	}
 }
 
@@ -329,7 +361,7 @@ func TestLoadValidatesCurrentConstraints(t *testing.T) {
 		{"zero user limit", "USER_REVIEWS_PER_HOUR", "0"},
 		{"zero repository limit", "REPO_REVIEWS_PER_HOUR", "0"},
 		{"zero active limit", "MAX_ACTIVE_REVIEWS", "0"},
-		{"v1 OpenCode binary", "OPENCODE_BIN", "opencode"},
+		{"unknown OpenCode binary", "OPENCODE_BIN", "opencode-v1"},
 		{"invalid bot login", "BOT_USERNAME", "@samik-bot"},
 		{"invalid bot ID", "BOT_GITHUB_ID", "0"},
 		{"invalid cookie secure", "COOKIE_SECURE", "sometimes"},
@@ -356,5 +388,77 @@ func TestValidModel(t *testing.T) {
 		if ValidModel(model) {
 			t.Errorf("ValidModel(%q) = true", model)
 		}
+	}
+}
+
+func TestNormalizeEngine(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  string
+	}{
+		{"", EngineOpenCode},
+		{" opencode ", EngineOpenCode},
+		{"opencode2", EngineOpenCode},
+		{"PI", EnginePi},
+		{"claude", "claude"},
+	} {
+		if got := NormalizeEngine(tc.value); got != tc.want {
+			t.Errorf("NormalizeEngine(%q) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestIsOpenCodeZenFreeModel(t *testing.T) {
+	for _, model := range []string{
+		"opencode/gpt-5-nano",
+		"opencode/grok-code#high",
+		"opencode/big-pickle",
+		"opencode/reviewer-free",
+		"opencode/reviewer-free:global",
+	} {
+		if !IsOpenCodeZenFreeModel(model) {
+			t.Errorf("IsOpenCodeZenFreeModel(%q) = false", model)
+		}
+	}
+	for _, model := range []string{
+		"opencode/claude-sonnet",
+		"openai/gpt-5-nano",
+		"orcarouter/big-pickle",
+		"opencode/free-reviewer",
+		"opencode/",
+	} {
+		if IsOpenCodeZenFreeModel(model) {
+			t.Errorf("IsOpenCodeZenFreeModel(%q) = true", model)
+		}
+	}
+}
+
+func TestValidateModelForEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		engine string
+		model  string
+		want   error
+	}{
+		{"OpenCode free model", EngineOpenCode, "opencode/big-pickle", nil},
+		{"OpenCode paid Zen model", EngineOpenCode, "opencode/claude-sonnet", nil},
+		{"OpenCode OrcaRouter model", EngineOpenCode, "orcarouter/auto", nil},
+		{"pi paid Zen model", EnginePi, "opencode/claude-sonnet", nil},
+		{"pi OrcaRouter model", EnginePi, "orcarouter/auto", nil},
+		{"pi free model", EnginePi, "opencode/gpt-5-nano", ErrZenFreeModelRequiresOpenCode},
+		{"invalid model", EnginePi, "not-a-model", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateModelForEngine(tc.engine, tc.model)
+			if tc.name == "invalid model" {
+				if err == nil || !strings.Contains(err.Error(), "provider/model") {
+					t.Fatalf("error = %v, want malformed-model rejection", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

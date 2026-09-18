@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -13,11 +14,20 @@ import (
 	"time"
 )
 
-// Reviewer engines. The default keeps the OpenCode 2 beta integration; "pi"
-// selects the pi coding agent against the same pooled Zen credentials.
+// Reviewer engines. OpenCode is the stable V2 command; opencode2 remains an
+// accepted compatibility value for existing deployments. "pi" selects the pi
+// coding agent against the same pooled gateway credentials.
 const (
-	EngineOpenCode2 = "opencode2"
-	EnginePi        = "pi"
+	EngineOpenCode        = "opencode"
+	EngineOpenCode2       = EngineOpenCode // source-compatible name for V2
+	EngineOpenCode2Compat = "opencode2"
+	EnginePi              = "pi"
+)
+
+// ErrZenFreeModelRequiresOpenCode describes the provider's intentional
+// free-tier client restriction. It is safe to return to an administrator.
+var ErrZenFreeModelRequiresOpenCode = errors.New(
+	"OpenCode Zen free models can only be used by the OpenCode reviewer; select a paid Zen model or an OrcaRouter model when REVIEW_ENGINE=pi",
 )
 
 // Config is the full runtime configuration, sourced from env vars.
@@ -46,13 +56,13 @@ type Config struct {
 	UserReviewsPerHour  int
 	RepoReviewsPerHour  int
 	MaxActiveReviews    int
-	ReviewEngine        string // active reviewer engine: EngineOpenCode2 (default) or EnginePi
+	ReviewEngine        string // active reviewer engine: EngineOpenCode (default) or EnginePi
 	OpenCodeBin         string
 	OpenCodeRuntimeDir  string
 	PiBin               string
 	PiRuntimeDir        string
 	BubblewrapBin       string
-	OpenCodeArgs        []string // flags passed after `opencode2 run`; empty for pi
+	OpenCodeArgs        []string // flags passed after `opencode run`; empty for pi
 	LogLevel            slog.Level
 }
 
@@ -71,8 +81,8 @@ func Load() (*Config, error) {
 		BotUsername:        env("BOT_USERNAME", "samik-bot"),
 		DefaultModel:       strings.TrimSpace(os.Getenv("ZEN_DEFAULT_MODEL")),
 		OrcaReferralCode:   strings.TrimSpace(os.Getenv("ORCAROUTER_REFERRAL_CODE")),
-		ReviewEngine:       strings.TrimSpace(env("REVIEW_ENGINE", EngineOpenCode2)),
-		OpenCodeBin:        strings.TrimSpace(env("OPENCODE_BIN", "opencode2")),
+		ReviewEngine:       NormalizeEngine(env("REVIEW_ENGINE", EngineOpenCode)),
+		OpenCodeBin:        strings.TrimSpace(env("OPENCODE_BIN", "opencode")),
 		OpenCodeRuntimeDir: strings.TrimSpace(os.Getenv("OPENCODE_RUNTIME_DIR")),
 		PiBin:              strings.TrimSpace(env("PI_BIN", "pi")),
 		PiRuntimeDir:       strings.TrimSpace(os.Getenv("PI_RUNTIME_DIR")),
@@ -118,11 +128,11 @@ func Load() (*Config, error) {
 	// Engine-specific staging is validated per engine so one deployment can
 	// hold both configurations and switch REVIEW_ENGINE without re-staging.
 	switch c.ReviewEngine {
-	case EngineOpenCode2:
-		if !isOpenCode2Bin(c.OpenCodeBin) {
-			return nil, fmt.Errorf("OPENCODE_BIN must name the OpenCode 2 opencode2 executable")
+	case EngineOpenCode:
+		if !isOpenCodeBin(c.OpenCodeBin) {
+			return nil, fmt.Errorf("OPENCODE_BIN must name the opencode or opencode2 executable")
 		}
-		// The v2 CLI talks to a background service by default; each review must
+		// The CLI talks to a background service by default; each review must
 		// run against its own isolated server and config, including when a full
 		// executable path is configured.
 		c.OpenCodeArgs = []string{"--standalone"}
@@ -131,7 +141,7 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("PI_BIN must name the pi executable")
 		}
 	default:
-		return nil, fmt.Errorf("REVIEW_ENGINE must be %q or %q", EngineOpenCode2, EnginePi)
+		return nil, fmt.Errorf("REVIEW_ENGINE must be %q or %q ("+EngineOpenCode2Compat+" is also accepted)", EngineOpenCode, EnginePi)
 	}
 	if !validGitHubLogin(c.BotUsername) {
 		return nil, fmt.Errorf("BOT_USERNAME must be a GitHub login without @")
@@ -194,6 +204,8 @@ func Load() (*Config, error) {
 		missing = append(missing, "ZEN_DEFAULT_MODEL")
 	} else if !ValidModel(c.DefaultModel) {
 		return nil, fmt.Errorf("ZEN_DEFAULT_MODEL must be a provider/model identifier")
+	} else if err := ValidateModelForEngine(c.ReviewEngine, c.DefaultModel); err != nil {
+		return nil, fmt.Errorf("ZEN_DEFAULT_MODEL: %w", err)
 	}
 	if c.ReviewConcurrency < 1 {
 		return nil, fmt.Errorf("REVIEW_CONCURRENCY must be at least 1")
@@ -244,9 +256,9 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
-func isOpenCode2Bin(bin string) bool {
+func isOpenCodeBin(bin string) bool {
 	base := strings.TrimSuffix(strings.ToLower(filepath.Base(bin)), ".exe")
-	return base == "opencode2"
+	return base == EngineOpenCode || base == EngineOpenCode2Compat
 }
 
 func isPiBin(bin string) bool {
@@ -258,10 +270,10 @@ func isPiBin(bin string) bool {
 // trusted runtime directory. The inactive engine's configuration is never
 // consulted, so deployments can stage or retain both independently.
 func (c *Config) AgentRuntime() (engine, bin, runtimeDir string) {
-	if c.ReviewEngine == EnginePi {
+	if NormalizeEngine(c.ReviewEngine) == EnginePi {
 		return EnginePi, c.PiBin, c.PiRuntimeDir
 	}
-	return EngineOpenCode2, c.OpenCodeBin, c.OpenCodeRuntimeDir
+	return EngineOpenCode, c.OpenCodeBin, c.OpenCodeRuntimeDir
 }
 
 func validGitHubLogin(login string) bool {
@@ -376,6 +388,58 @@ func validatePort(value string) error {
 // OAuthConfigured reports whether GitHub OAuth login can work.
 func (c *Config) OAuthConfigured() bool {
 	return c.OAuthClientID != "" && c.OAuthClientSecret != ""
+}
+
+// NormalizeEngine maps the stable command and its compatibility alias to the
+// canonical engine value. Unknown values are returned trimmed for validation.
+func NormalizeEngine(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", EngineOpenCode, EngineOpenCode2Compat:
+		return EngineOpenCode
+	default:
+		return value
+	}
+}
+
+// IsOpenCodeZenFreeModel recognizes the stable OpenCode Zen free-model forms.
+// The upstream catalog can change, so this intentionally remains a
+// conservative defense rather than a promise of a complete catalog.
+func IsOpenCodeZenFreeModel(model string) bool {
+	if !ValidModel(model) {
+		return false
+	}
+	provider, id, _ := strings.Cut(model, "/")
+	if provider != EngineOpenCode {
+		return false
+	}
+	id, _, _ = strings.Cut(id, "#")
+	id = strings.ToLower(id)
+	switch id {
+	case "gpt-5-nano", "grok-code", "big-pickle":
+		return true
+	default:
+		return strings.HasSuffix(id, "-free") || strings.HasSuffix(id, "-free:global")
+	}
+}
+
+// ValidateModelForEngine enforces the OpenCode-only Zen free-tier policy while
+// keeping paid Zen and OrcaRouter models available to both engines.
+func ValidateModelForEngine(engine, model string) error {
+	if !ValidModel(model) {
+		return errors.New("model must be a provider/model identifier")
+	}
+	switch NormalizeEngine(engine) {
+	case EngineOpenCode:
+		return nil
+	case EnginePi:
+		if IsOpenCodeZenFreeModel(model) {
+			return ErrZenFreeModelRequiresOpenCode
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown reviewer engine %q", engine)
+	}
 }
 
 // ValidModel accepts the provider/model[#variant] form documented by OpenCode.

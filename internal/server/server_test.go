@@ -505,6 +505,49 @@ func TestAdminAPIKeysRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsRejectsFreeZenModelForPi(t *testing.T) {
+	s, deps, _ := setup(t, nil)
+	admin, err := deps.st.UpsertUser(testAdminID, "root", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.ReviewEngine = config.EnginePi
+	h := New(s.cfg, s.st, s.app, s.engine, s.log, embed.FS{})
+	token := "settings-admin"
+	if err := deps.st.CreateSession(admin.ID, token, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	get := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	get.Header.Set("Origin", s.cfg.PublicURL)
+	get.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, get)
+	var settings map[string]string
+	if getRec.Code != http.StatusOK || json.Unmarshal(getRec.Body.Bytes(), &settings) != nil || settings["engine"] != config.EnginePi {
+		t.Fatalf("settings response = %d %s, want active pi engine", getRec.Code, getRec.Body.String())
+	}
+
+	request := func(model string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/settings", strings.NewReader(`{"model":"`+model+`"}`))
+		req.Header.Set("Origin", s.cfg.PublicURL)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := request("opencode/big-pickle"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "only be used by the OpenCode reviewer") {
+		t.Fatalf("free Zen response = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := request("opencode/paid-model"); rec.Code != http.StatusOK {
+		t.Fatalf("paid Zen response = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := request("orcarouter/auto"); rec.Code != http.StatusOK {
+		t.Fatalf("OrcaRouter response = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCurrentUserRejectsDuplicateSessionCookies(t *testing.T) {
 	s, deps, _ := setup(t, nil)
 	u, err := deps.st.UpsertUser(testRequesterID, "alice", "", false)

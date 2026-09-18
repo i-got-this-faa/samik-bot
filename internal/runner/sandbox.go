@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/jR4dh3y/samik-bot/internal/config"
 )
 
 // ErrSandboxUnavailable means a review cannot run in the mandatory Bubblewrap
@@ -87,10 +89,14 @@ func (f *sandboxFiles) extraFiles() []*os.File {
 // model of another provider are exercised at review time.
 func Preflight(bin, runtimeDir, bubblewrapBin, engine, model string) error {
 	if engine == "" {
-		engine = EngineOpenCode2
+		engine = config.EngineOpenCode
+	}
+	engine = normalizeEngine(engine)
+	if err := config.ValidateModelForEngine(engine, model); err != nil {
+		return err
 	}
 	if bin == "" {
-		bin = "opencode2"
+		bin = "opencode"
 		if engine == EnginePi {
 			bin = "pi"
 		}
@@ -142,7 +148,7 @@ func Preflight(bin, runtimeDir, bubblewrapBin, engine, model string) error {
 			if engine == EnginePi {
 				return fmt.Errorf("%w: pi could not start inside Bubblewrap", ErrSandboxUnavailable)
 			}
-			return fmt.Errorf("%w: OpenCode 2 could not start inside Bubblewrap", ErrSandboxUnavailable)
+			return fmt.Errorf("%w: OpenCode could not start inside Bubblewrap", ErrSandboxUnavailable)
 		}
 	}
 	return nil
@@ -154,7 +160,11 @@ func resolveSandboxRuntime(o Options) (sandboxRuntime, error) {
 	}
 	engine := o.Engine
 	if engine == "" {
-		engine = EngineOpenCode2
+		engine = config.EngineOpenCode
+	}
+	engine = normalizeEngine(engine)
+	if engine != EngineOpenCode && engine != EnginePi {
+		return sandboxRuntime{}, fmt.Errorf("%w: unknown reviewer engine %q", ErrSandboxUnavailable, o.Engine)
 	}
 	root, binEnv, dirEnv := sandboxOpenCodeRoot, "OPENCODE_BIN", "OPENCODE_RUNTIME_DIR"
 	if engine == EnginePi {
@@ -228,7 +238,7 @@ func isEngineBinName(engine, path string) bool {
 	if engine == EnginePi {
 		return base == "pi"
 	}
-	return base == "opencode2"
+	return base == EngineOpenCode || base == EngineOpenCode2Compat
 }
 
 func canonicalDir(path string) (string, error) {
@@ -518,7 +528,7 @@ func sandboxCommand(paths sandboxRuntime, checkout string, files *sandboxFiles, 
 		args = append(args,
 			"--dir", "/xdg-config/opencode",
 			"--ro-bind-data", fmt.Sprint(configFD), "/xdg-config/opencode/opencode.json",
-			// The current beta cannot create its session database on a tmpfs
+			// OpenCode stores its session database on the host-backed directory
 			// /xdg-data (Session.create fails); bind a per-run host directory
 			// with the same lifetime instead. It carries no cross-run state.
 			"--bind", dataDir, "/xdg-data",

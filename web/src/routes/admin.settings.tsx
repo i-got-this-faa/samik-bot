@@ -50,6 +50,8 @@ function SettingsForm() {
 	const sessionExpired = useUnauthorizedRedirect([settings.error, save.error]);
 
 	const current = model ?? settings.data?.model ?? "";
+	const engine = settings.data?.engine ?? "opencode";
+	const piActive = engine === "pi";
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -62,10 +64,10 @@ function SettingsForm() {
       <CardHeader>
         <CardTitle as="h1">Review settings</CardTitle>
         <CardDescription>
-          Set the model ID applied to new reviews, in provider/model form. Only{" "}
-          <code>orcarouter/…</code> models route through OrcaRouter; every other valid provider/model
-          ID uses the built-in OpenCode Zen provider. Model availability, pricing, and account limits
-          are managed by that gateway.
+          Set the model ID applied to new reviews, in provider/model form. The active reviewer is{" "}
+          <code>{engine}</code>. <code>orcarouter/…</code> models route through OrcaRouter and{" "}
+          <code>opencode/…</code> models route through OpenCode Zen. Free Zen models are available
+          only when the active reviewer is OpenCode; pi requires a paid Zen model or OrcaRouter.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid max-w-md gap-3">
@@ -100,7 +102,7 @@ function SettingsForm() {
               />
               <p id="default-model-help" className="text-xs text-zinc-500">
                 Use a model identifier enabled for your organization on the selected gateway, and
-                keep the key pool on that gateway.
+                keep the key pool on that gateway. {piActive && "The pi reviewer cannot use OpenCode Zen free models."}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">

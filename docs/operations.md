@@ -1,19 +1,19 @@
 # Deployment and operations
 
 This document describes the runtime contract for `samik-bot`. It is intentionally provider
-neutral: deploy it on a host that can run the repository-pinned Go binary and the current supported
-OpenCode 2 beta CLI, rather than assuming a Docker image or a particular PaaS integration.
+neutral: deploy it on a host that can run the repository-pinned Go binary and the supported stable
+OpenCode V2 CLI, rather than assuming a Docker image or a particular PaaS integration.
 
 ## Before first deploy
 
 1. Build the release artifact with `mise exec -- make build`. The resulting
    `bin/samik-bot` contains the compiled dashboard from `web/dist`.
-2. Provision a Linux review sandbox before enabling webhooks. Install the current OpenCode 2 beta
-   client and Bubblewrap on the **runtime** host. The integration invokes `opencode2`, not the V1
-   `opencode` executable. Package the OpenCode executable and its package files under the absolute
-   `OPENCODE_RUNTIME_DIR`; with the default `OPENCODE_BIN=opencode2`, the runner expects
-   `$OPENCODE_RUNTIME_DIR/bin/opencode2`. An absolute custom `OPENCODE_BIN` must still resolve
-   inside that runtime directory.
+2. Provision a Linux review sandbox before enabling webhooks. Install the supported stable OpenCode
+   V2 client and Bubblewrap on the **runtime** host. The integration invokes the canonical `opencode`
+   executable; `opencode2` remains accepted for compatibility. Package the OpenCode executable and
+   its package files under the absolute `OPENCODE_RUNTIME_DIR`; with the default
+   `OPENCODE_BIN=opencode`, the runner expects `$OPENCODE_RUNTIME_DIR/bin/opencode`. An absolute
+   custom `OPENCODE_BIN` must still resolve inside that runtime directory.
 
    The runner bind-mounts the runtime directory read-only, so deploy a trusted tree: it must contain
    no symlink, group-writable, or world-writable entry, and each entry must be owned by root or the
@@ -22,15 +22,14 @@ OpenCode 2 beta CLI, rather than assuming a Docker image or a particular PaaS in
    trust check or the Bubblewrap launch fails; the service never falls back to direct OpenCode
    execution.
 
-   Run `OPENCODE_BIN=/opt/opencode-runtime/bin/opencode2 mise exec -- make opencode-check` as the
+   Run `OPENCODE_BIN=/opt/opencode-runtime/bin/opencode mise exec -- make opencode-check` as the
    service user to check the non-interactive CLI entry point. It does not validate the Bubblewrap
    boundary, so test a disposable, authorized PR in staging before production. Use the current
-   [OpenCode 2 beta installation guidance](https://opencode.ai/v2/docs); its beta docs explicitly
-   warn that supported packaging options can change. `make setup` intentionally installs only the
-   repository-pinned Go/Bun toolchain and application dependencies. Pin a known-good OpenCode beta
-   package release in the host image or deployment configuration, record `opencode2 --version` with
-   the application release, and promote that same version through staging before production. Do not
-   make a moving beta tag an unattended production update.
+   [OpenCode V2 installation guidance](https://opencode.ai/v2/docs). `make setup` intentionally
+   installs only the repository-pinned Go/Bun toolchain and application dependencies. Pin a known-good
+   OpenCode package release in the host image or deployment configuration, record the configured
+   OpenCode binary's `--version` output with the application release, and promote that same version
+   through staging before production.
 3. Create the GitHub App and separate OAuth App as described in the README. Install the App only on
    repositories it is allowed to review. The webhook must reach
    `https://<public-host>/webhooks/github` over HTTPS.
@@ -41,7 +40,7 @@ OpenCode 2 beta CLI, rather than assuming a Docker image or a particular PaaS in
 5. Set every required variable in the [configuration table](../README.md#configuration): GitHub App
    credentials, `SESSION_SECRET`, `ADMIN_GITHUB_IDS`, both GitHub target allowlists,
    `ZEN_DEFAULT_MODEL`, the active engine's runtime dir (`OPENCODE_RUNTIME_DIR` for the default
-   `opencode2` engine, `PI_RUNTIME_DIR` when `REVIEW_ENGINE=pi`), and `BUBBLEWRAP_BIN`. Configure
+   `opencode` engine, `PI_RUNTIME_DIR` when `REVIEW_ENGINE=pi`), and `BUBBLEWRAP_BIN`. Configure
    both OAuth values as well: startup permits them to be absent, but users cannot register or log
    in without them. Select a model that is currently enabled for the deployed gateway
    configuration (`opencode/…` models use OpenCode Zen, `orcarouter/…` models use OrcaRouter);
@@ -55,16 +54,18 @@ Run one service process with environment variables injected by the platform. Sta
 rebuilds the dashboard and therefore requires Go and Bun. `make run-local` is deliberately a
 local-development convenience that sources `.env`. The binary itself does not read dotenv files.
 
-The application always runs OpenCode 2 in standalone mode. `OPENCODE_BIN` must have the basename
-`opencode2`; a relative name is resolved below `OPENCODE_RUNTIME_DIR/bin`, and an absolute path must
-be inside that directory. `OPENCODE_RUNTIME_DIR` and `BUBBLEWRAP_BIN` are required configuration
-values, not optional tuning knobs. Configuration loading detects missing paths; individual reviews
-also verify the runtime tree and Bubblewrap capability before executing untrusted PR content.
+The application always runs stable OpenCode V2 in standalone mode. `OPENCODE_BIN` must have the
+basename `opencode` or the compatibility name `opencode2`; a relative name is resolved below
+`OPENCODE_RUNTIME_DIR/bin`, and an absolute path must be inside that directory.
+`OPENCODE_RUNTIME_DIR` and `BUBBLEWRAP_BIN` are required configuration values, not optional tuning
+knobs. Configuration loading detects missing paths; individual reviews also verify the runtime tree
+and Bubblewrap capability before executing untrusted PR content.
 
 ### Reviewer engine selection
 
-`REVIEW_ENGINE` selects the reviewer agent and its separate configuration; the default remains
-`opencode2`. Setting `REVIEW_ENGINE=pi` activates the pi coding agent:
+`REVIEW_ENGINE` selects the reviewer agent and its separate configuration; the default is `opencode`.
+The compatibility value `opencode2` is normalized to the same stable OpenCode engine. Setting
+`REVIEW_ENGINE=pi` activates the pi coding agent:
 
 - `PI_BIN` (default `pi`) must have the basename `pi` and resolve inside `PI_RUNTIME_DIR`, exactly
   like the OpenCode contract. `PI_RUNTIME_DIR` is required for this engine; `OPENCODE_RUNTIME_DIR`
@@ -110,7 +111,8 @@ HTTP port. HTTP `localhost` is suitable only for local development.
 The host process needs outbound access to GitHub for App/OAuth/API operations. The review sandbox
 shares network access so OpenCode can reach its configured Zen/provider endpoint; Bubblewrap cannot
 express hostname allowlists, so enforce provider-only sandbox egress with host or network policy.
-The review runner makes a temporary checkout per job and invokes `opencode2` with isolated
+The review runner makes a temporary checkout per job and invokes `opencode` (or the compatible
+`opencode2` executable name) with isolated
 configuration; allow enough temporary disk and process capacity for the largest PR that the service
 policy accepts. Current defensive ceilings are a 2 MiB webhook body, a 10 MiB PR diff, rejection at
 3,000 changed files, a 5 MiB checkout blob, 100 MiB total checkout content, 10,000 checkout files,
@@ -176,8 +178,10 @@ same review event from creating an unsafe duplicate.
 
 ## Key-pool governance
 
-OpenCode Zen is a usage-based provider that also lists rate-limited free models (IDs ending in
-`-free`); free models still consume the pooled keys' request quota and rate limits. Add API keys
+OpenCode Zen is a usage-based provider that also lists rate-limited free models (recognized named IDs
+include `gpt-5-nano`, `grok-code`, and `big-pickle`, as well as IDs ending in `-free` or
+`-free:global`). Free Zen models are available only to the OpenCode reviewer; pi supports paid Zen
+and OrcaRouter models. Free models still consume the pooled keys' request quota and rate limits. Add API keys
 only from accounts that are authorized to share the same workload, budget, and data-access
 boundary. The dashboard's per-key request counter is an operational scheduling metric; it is not a
 provider billing record or a way to bypass provider controls.
@@ -208,7 +212,6 @@ reviews, unavailable eligible keys, and unexpected restart loops. Terminal revie
 operator-safe cause plus a bounded, sanitized reviewer-stderr excerpt for agent and sandbox
 failures; run with `LOG_LEVEL=debug` while diagnosing, then return to `info`.
 
-Roll out OpenCode 2 beta upgrades first in a non-production environment with a funded,
-organization-authorized test key and a disposable test PR. The beta CLI/configuration contract may
-change independently of this repository. Keep the previous binary, OpenCode installation, database
-backup, and `SESSION_SECRET` available until the smoke test completes.
+Roll out OpenCode upgrades first in a non-production environment with a funded,
+organization-authorized test key and a disposable test PR. Keep the previous binary, OpenCode
+installation, database backup, and `SESSION_SECRET` available until the smoke test completes.

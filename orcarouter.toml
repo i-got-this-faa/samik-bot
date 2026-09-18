@@ -1,5 +1,5 @@
 # OrcaRouter provider configuration for samik-bot.
-# Preconfigured provider entry for opencode2 and pi reviewer engines.
+# Preconfigured provider entry for OpenCode and pi reviewer engines.
 
 model = "orcarouter/auto"
 model_provider = "orcarouter"
