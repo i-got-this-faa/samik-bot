@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -1156,6 +1157,33 @@ func (s *Store) listReviews(query string, args ...any) ([]Review, error) {
 		out = append(out, *r)
 	}
 	return out, rows.Err()
+}
+
+// FindingCounts returns the number of stored findings for each requested review.
+func (s *Store) FindingCounts(ctx context.Context, reviewIDs []int64) (map[int64]int, error) {
+	counts := make(map[int64]int, len(reviewIDs))
+	if len(reviewIDs) == 0 {
+		return counts, nil
+	}
+	args := make([]any, len(reviewIDs))
+	for i, id := range reviewIDs {
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT review_id, COUNT(*) FROM findings
+		WHERE review_id IN (`+reviewSQLPlaceholders(len(args))+`) GROUP BY review_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var count int
+		if err := rows.Scan(&id, &count); err != nil {
+			return nil, err
+		}
+		counts[id] = count
+	}
+	return counts, rows.Err()
 }
 
 // SaveFinding is retained only as a compatibility guard for old callers. A

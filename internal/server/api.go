@@ -123,17 +123,22 @@ func (s *Server) handleReviews(u *store.User, w http.ResponseWriter, r *http.Req
 		writeErr(w, http.StatusInternalServerError, "db failed")
 		return
 	}
-	out := make([]reviewJSON, 0, len(reviews))
+	visible := reviews[:0]
+	ids := make([]int64, 0, len(reviews))
 	for _, rev := range reviews {
-		if !s.canViewReview(u, rev) {
-			continue
+		if s.canViewReview(u, rev) {
+			visible = append(visible, rev)
+			ids = append(ids, rev.ID)
 		}
-		findings, err := s.st.ListFindings(rev.ID)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "db failed")
-			return
-		}
-		out = append(out, toReviewJSON(rev, len(findings)))
+	}
+	counts, err := s.st.FindingCounts(r.Context(), ids)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "db failed")
+		return
+	}
+	out := make([]reviewJSON, 0, len(visible))
+	for _, rev := range visible {
+		out = append(out, toReviewJSON(rev, counts[rev.ID]))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
