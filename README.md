@@ -1,290 +1,143 @@
 # samik-bot
 
+[![CI](https://github.com/i-got-this-faa/samik-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/i-got-this-faa/samik-bot/actions/workflows/ci.yml)
 [![Powered by OrcaRouter](https://img.shields.io/badge/Powered_by-OrcaRouter-2563eb)](https://www.orcarouter.ai/ref/ref_b7dd35655fa712a6b8b0)
 
-PR review bot powered by AI coding agents running inside hardened Bubblewrap sandboxes. Mention `@samik-bot` on a pull request and it runs an agentic review against the PR diff, posting a summary comment with a Mermaid sequence diagram followed by inline diff findings.
+samik-bot is a self-hosted GitHub pull request review bot. Comment `@samik-bot review please` on a PR to request a review. The bot posts a summary with a Mermaid sequence diagram, then adds inline findings anchored to changed lines. The web dashboard shows progress, results, and any failure details.
 
-Preconfigured for [OrcaRouter](https://www.orcarouter.ai) (`orcarouter/auto`) with dual-engine support:
-- [OpenCode V2](https://opencode.ai/v2/docs) (`opencode`, default; `opencode2` remains a compatibility name)
-- [pi](https://github.com/earendil-works/pi) (`pi`, lightweight Node agent)
+Reviews run on demand in a Linux Bubblewrap sandbox with a read-only PR checkout. The default reviewer is [OpenCode V2](https://opencode.ai/v2/docs) with the `orcarouter/auto` model. The service also supports [pi](https://github.com/earendil-works/pi) and OpenCode Zen.
 
-> **Engines & Gateways.** Reviews run under Bubblewrap isolation with read-only repository access. Models use `provider/model` identifiers. `orcarouter/…` models route through [OrcaRouter](https://www.orcarouter.ai) (OpenAI-compatible gateway at `https://api.orcarouter.ai/v1`). `opencode/…` models route through OpenCode Zen. Keys are encrypted at rest in SQLite and injected only into the sandboxed agent's isolated credential store.
+## Request a review
 
-## How it works
+1. Sign in to the bot's dashboard with GitHub once, including if you are an administrator.
+2. On an allowlisted PR, add a new conversation comment with `@samik-bot review please`. Use your deployment's configured bot mention if it differs.
+3. Look for the 👀 reaction when the worker starts and follow progress at `/dashboard`. A completed review posts the summary, any findings that map to the diff, and a 🚀 reaction on the request.
 
-1. GitHub webhook `issue_comment.created` → verify HMAC → body mentions `@<BOT_USERNAME>` →
-   commenter must have registered in the dashboard → their immutable numeric GitHub user ID must
-   be in `ADMIN_GITHUB_IDS` or `REVIEWER_GITHUB_IDS`, and the target installation and repository
-   IDs must both be allowlisted → enqueue (one active review per PR; reacts 👀). Unregistered
-   commenters receive a registration nudge; registered but unauthorized commenters receive an
-   access nudge.
-2. Worker: pick the eligible pooled key with the fewest recorded requests today (skipping
-   cooling-down/disabled keys)
-   → shallow-clone the PR head → fetch the diff via the GitHub API → write an isolated engine
-   config and credential store (the key exists only inside the sandbox) in a temp XDG/config dir →
-   run the configured reviewer engine in a Bubblewrap sandbox with the review prompt (the agent
-   reads repository files itself), selected model, isolated output, and a hard timeout. With
-   `REVIEW_ENGINE=pi` the runner executes `pi --print` with a read-only tool allowlist
-   (`read,grep,find,ls`), all project-local discovery disabled, no session persistence, and the
-   pooled key written to pi's isolated `auth.json` as the credential of the model's gateway
-   provider (built-in `opencode` for Zen, a per-run custom provider for `orcarouter/…`).
-3. Parse the agent's final message: last fenced JSON block `{summary, sequence_diagram, findings:[{path,
-   line, side, severity, body}]}` (tolerant — plain text gets a safe fallback diagram) → map findings
-   to diff lines via the PR file list (skip findings outside the diff) → post the summary with its
-   Mermaid diagram first, then inline review comments → react 🚀 on success, or react 👎 and record a
-   failure cause on terminal failure → record per-key usage. A
-   402/429/quota failure cools that key for `ZEN_COOLDOWN_MINUTES` and may retry once with another
-   eligible, authorized key.
+The operator grants review access by numeric GitHub user ID. The PR's installation and repository must both be on the deployment's allowlists. Each PR can have one active review at a time.
 
-Terminal failures mark the review `failed` in the dashboard with an operator-safe cause (for example
-`opencode_execution`, `sandbox_unavailable`, `github_http_404`) so the PR's review slot is released
-and the requester can mention the bot again. The service log gains the cause plus, for agent and
-sandbox failures, a bounded sanitized excerpt of the reviewer's stderr; set `LOG_LEVEL=debug` for
-engine-internal detail. Shutdown interruptions are not failures: those rows are requeued durably by
-the next startup.
+## Set up an instance
 
-## Local setup
+### 1. Install the development dependencies and runtime
 
-Install [Mise](https://mise.jdx.dev/) first. The repository pins Go and Bun in `mise.toml`; do not
-rely on whichever versions happen to be globally installed. Install the supported stable OpenCode
-V2 CLI separately, package it with its dependencies in a trusted runtime directory, and install
-Bubblewrap on the Linux host before attempting a live review. The default `OPENCODE_BIN=opencode`
-is resolved as `$OPENCODE_RUNTIME_DIR/bin/opencode`, not from an arbitrary application `PATH`.
-The compatibility executable name `opencode2` is also accepted. Follow the [OpenCode V2
-installation guide](https://opencode.ai/v2/docs) and pin the release used by the runtime image.
-
-`make setup` installs the repository-pinned Go/Bun toolchain and application dependencies only; it
-intentionally does not install the external OpenCode CLI, Bubblewrap, or any credentials. After
-staging `opencode`, confirm the non-interactive automation entry point before configuring the
-service:
+Install [Mise](https://mise.jdx.dev/) and use the Go and Bun versions pinned in [mise.toml](mise.toml).
 
 ```bash
+git clone https://github.com/i-got-this-faa/samik-bot.git
+cd samik-bot
 make setup
-OPENCODE_BIN=/opt/opencode-runtime/bin/opencode mise exec -- make opencode-check
 cp .env.example .env
-# Edit .env with the required GitHub, ID allowlist, sandbox, session, and model values.
-mise exec -- make run-local
 ```
 
-`opencode-check` runs the configured OpenCode binary with `--version` and `run --help`; it does not call a model,
-validate the Bubblewrap sandbox, or need a gateway API key. `make run-local` loads `.env` only for a
-local POSIX-shell run. The binary itself reads process environment variables and never parses `.env`;
-production must inject values through its secret manager. The web UI is at `$PUBLIC_URL` (`/`
-landing, `/dashboard` reviews, `/admin/keys`, `/admin/settings`). Health check: `GET /healthz` →
-`{"status":"ok"}`.
-
-### Selecting the pi reviewer engine
-
-Set `REVIEW_ENGINE=pi` (plus `PI_RUNTIME_DIR`, and optionally `PI_BIN`) to run
-[pi](https://github.com/earendil-works/pi) instead of `opencode`. The OpenCode configuration
-above stays valid and untouched — the two engines are configured, staged, and validated separately,
-so you can switch back with one env var. Both engines use the same pooled gateway keys and the same
-`ZEN_DEFAULT_MODEL` / dashboard model setting in `provider/model` form. OpenCode Zen free models
-(including recognized IDs such as `opencode/big-pickle` and IDs ending in `-free` or
-`-free:global`) can run only with the OpenCode reviewer; pi supports paid Zen models and
-OrcaRouter models.
-
-Stage a pi runtime directory the same way as the OpenCode runtime: an absolute trusted directory
-(mounted read-only, no symlinked/group-writable/world-writable entries) containing `bin/pi` and
-its dependencies. pi is a Node CLI, so the sandbox tree must also contain the `node` executable —
-the sandbox has no host `/usr/bin/env`, so `bin/pi` must be a launcher with an absolute shebang
-such as `#!/opt/pi-runtime/bin/sh`. The staged tree must keep the npm package layout (a
-`package.json` above `dist/`), because pi resolves its built-in themes and templates relative to
-the package root. Example staging from an npm install:
+For a running instance, use a Linux host with Bubblewrap and stage the selected reviewer separately. For the default OpenCode reviewer, install a pinned stable V2 release and place the executable and its dependencies under a trusted runtime directory such as `/opt/opencode-runtime`. Set `OPENCODE_RUNTIME_DIR` to that directory and `BUBBLEWRAP_BIN` to the trusted Bubblewrap executable's direct path.
 
 ```bash
-npm pack @earendil-works/pi-coding-agent        # then unpack into /opt/pi-runtime/lib/pi-coding-agent
-cp -r "$SRC/node_modules/@earendil-works/chord" /opt/pi-runtime/lib/pi-coding-agent/node_modules/@earendil-works/
-cp "$(command -v node)" /opt/pi-runtime/bin/node    # copy, never symlink
-cp "$(command -v bash)" /opt/pi-runtime/bin/sh      # copy, never symlink
-cat > /opt/pi-runtime/bin/pi <<'EOF'
-#!/opt/pi-runtime/bin/sh
-exec /opt/pi-runtime/bin/node /opt/pi-runtime/lib/pi-coding-agent/dist/bundle/cli.js "$@"
-EOF
-chmod 0755 /opt/pi-runtime/bin/pi
+OPENCODE_BIN=/opt/opencode-runtime/bin/opencode mise exec -- make opencode-check
+```
+
+This checks the CLI's version and help commands. Service startup separately validates the runtime and starts the CLI inside Bubblewrap. Use a runtime tree owned by root or the service user, with no symlinks or group- or world-writable entries. See the [operations guide](docs/operations.md) for deployment requirements.
+
+### 2. Register the GitHub App and OAuth App
+
+Open **GitHub Settings → Developer settings** and create these two registrations.
+
+| Registration | What to configure |
+| --- | --- |
+| **GitHub App** | Set the homepage to `PUBLIC_URL`, set the webhook URL to `https://<host>/webhooks/github`, and use a generated webhook secret. Subscribe to **Issue comment**. Grant **Contents: Read-only**, **Pull requests: Read and write**, and **Issues: Read and write**. |
+| **GitHub OAuth App** | Set the homepage to `PUBLIC_URL` and the authorization callback URL to `<PUBLIC_URL>/auth/github/callback`. Copy the client ID and generate a client secret for dashboard sign-in. |
+
+From the GitHub App settings, copy the **App ID** and generate a private key. Install the App on the test repository and record the installation and repository numeric IDs. You can find both in a webhook delivery as `installation.id` and `repository.id`.
+
+Set `BOT_GITHUB_ID` to the numeric user ID of the installed App's bot account. With the GitHub CLI, replace `YOUR-APP-SLUG` with the slug from the App's settings URL.
+
+```bash
+gh api 'users/YOUR-APP-SLUG%5Bbot%5D' --jq '.id'
+```
+
+You can also read `user.id` from an existing comment by that account through the GitHub REST API. The bot uses this ID to recognize its own comments during publication recovery.
+
+### 3. Configure and start the service
+
+Fill in [.env.example](.env.example)'s settings in your local `.env`. Generate separate values for `GITHUB_WEBHOOK_SECRET` and `SESSION_SECRET` with `openssl rand -hex 32`. Keep the session secret with the database because it is used to derive the encryption key for the stored gateway credentials.
+
+```bash
+mise exec -- make run-local
+curl -fsS http://localhost:8080/healthz
+```
+
+Run the health check from a second terminal while the service is running. A `{"status":"ok"}` response confirms that the review worker is ready and SQLite responds. Use your configured port if it differs from `8080`. For a live webhook test, point GitHub at a reachable HTTPS endpoint for the service and set `PUBLIC_URL` to that origin.
+
+### 4. Connect a gateway key and test
+
+1. Sign in at `PUBLIC_URL` as a user listed in `ADMIN_GITHUB_IDS`.
+2. Add an authorized gateway key at `/admin/keys`, or use **Connect with OrcaRouter** at `/admin/partner` to add an OrcaRouter key through the provider's consent flow. The server stores pooled keys encrypted in SQLite.
+3. Check the active model at `/admin/settings`. Use OrcaRouter keys for `orcarouter/…` models and OpenCode Zen keys for `opencode/…` models. The pool selects the least-used eligible key across the entire pool, so use keys from a single gateway and switch the pool and model together.
+4. Request a review on a test PR and watch the status move from `queued` to `running` to `done`. Live reviews can incur gateway charges.
+
+## Configuration
+
+[.env.example](.env.example) contains the complete list and local defaults. The service reads process environment variables. `make run-local` sources `.env` for development, and production deployments inject environment variables directly.
+
+| Setting | Value |
+| --- | --- |
+| `GITHUB_APP_ID`, `GITHUB_WEBHOOK_SECRET` | Required GitHub App ID and matching webhook secret. |
+| `GITHUB_APP_PRIVATE_KEY_PATH` or `GITHUB_APP_PRIVATE_KEY` | Required private key as a file path or inline PEM. The file path takes precedence. |
+| `BOT_GITHUB_ID` | Required numeric user ID of the App's bot account. |
+| `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | Required for dashboard login and initial requester registration. |
+| `ADMIN_GITHUB_IDS`, `REVIEWER_GITHUB_IDS` | Required admin list and optional review-only list. Both accept comma-separated positive numeric GitHub user IDs. |
+| `ALLOWED_GITHUB_INSTALLATION_IDS`, `ALLOWED_GITHUB_REPOSITORY_IDS` | Required comma-separated numeric target IDs. Both lists must match the PR target. |
+| `BOT_USERNAME` | Mentionable login without `@`. Defaults to `samik-bot`. |
+| `SESSION_SECRET` | Required, at least 32 bytes. Retain it across restarts and restores. |
+| `ZEN_DEFAULT_MODEL` | Required initial `provider/model` value. The example sets `orcarouter/auto`. Admins can override it at `/admin/settings`. |
+| `REVIEW_ENGINE` | Defaults to `opencode`. Also accepts `pi` and the compatibility value `opencode2`. |
+| `OPENCODE_RUNTIME_DIR`, `OPENCODE_BIN` | Runtime directory required for OpenCode. The default executable resolves to `$OPENCODE_RUNTIME_DIR/bin/opencode`. |
+| `PI_RUNTIME_DIR`, `PI_BIN` | Runtime directory required for pi. The default executable resolves to `$PI_RUNTIME_DIR/bin/pi`. |
+| `BUBBLEWRAP_BIN` | Required for both engines. Set a direct path such as `/usr/bin/bwrap`. |
+| `PORT`, `PUBLIC_URL`, `DB_PATH` | Defaults to `8080`, `http://localhost:$PORT`, and `samik-bot.db`. Use HTTPS and durable storage in production. |
+| `COOKIE_SECURE` | Defaults to true for an HTTPS `PUBLIC_URL`. HTTPS deployments require secure cookies. |
+| `REVIEW_CONCURRENCY`, `REVIEW_TIMEOUT_MINUTES`, `ZEN_COOLDOWN_MINUTES` | Defaults to 2 workers, a 20-minute review timeout, and a 60-minute key cooldown. |
+| `USER_REVIEWS_PER_HOUR`, `REPO_REVIEWS_PER_HOUR`, `MAX_ACTIVE_REVIEWS` | Defaults to 6 reviews per user per hour, 30 per repo per hour, and 50 active reviews. |
+| `ORCAROUTER_REFERRAL_CODE` | Optional override for the referral code used by the partner dashboard and Connect flow. |
+| `LOG_LEVEL` | Defaults to `info`. Also accepts `debug`, `warn`, and `error`. |
+
+Use immutable numeric GitHub IDs throughout. Startup rejects duplicate IDs within a list and a non-empty legacy `ADMIN_GITHUB_LOGINS` setting. Configure at least one administrator before starting the service.
+
+### Run reviews with pi
+
+Set `REVIEW_ENGINE=pi` and `PI_RUNTIME_DIR`. Stage the pi launcher, Node executable, package, and dependencies in the trusted runtime tree. Preserve the package layout, including `package.json` above `dist/`. Give the launcher an absolute shebang pointing to an interpreter inside the staged tree. For a shell launcher, bundle the shell and invoke the bundled Node executable with the installed pi CLI entry point.
+
+```bash
 PI_BIN=/opt/pi-runtime/bin/pi mise exec -- make pi-check
 ```
 
-`pi-check` runs `pi --version` and `pi --help`; the service's startup preflight additionally runs
-`pi --list-models <gateway>` inside the same Bubblewrap profile, where `<gateway>` is the provider
-prefix of the configured default model (`opencode` for Zen, `orcarouter` for OrcaRouter). This
-proves the staged agent
-resolves that gateway provider from the isolated credential store without calling
-a model.
+Startup runs a gateway-specific model catalog probe inside Bubblewrap. pi supports OrcaRouter and paid OpenCode Zen models. OpenCode Zen free models require the OpenCode reviewer.
 
-### OrcaRouter Preconfiguration
+## Troubleshooting
 
-`samik-bot` is preconfigured for [OrcaRouter](https://www.orcarouter.ai) out of the box (`ZEN_DEFAULT_MODEL=orcarouter/auto`). The provider configuration ships in `orcarouter.toml`:
+| Symptom | What to check |
+| --- | --- |
+| Sign-in fails | Confirm both OAuth credentials are set and that the callback matches `PUBLIC_URL` exactly. |
+| The comment produces no review | In GitHub App **Recent deliveries**, check the `issue_comment` delivery response. Verify the webhook secret, mention, target allowlists, requester registration, and requester access. A PR with an active review or a request over the configured capacity limits will skip admission. |
+| Startup reports a sandbox preflight error | Check the configured binary path, runtime directory ownership and permissions, and Bubblewrap support on the Linux host. |
+| The review shows `failed` | Open the review detail and check the reported cause alongside the service log. For gateway failures, check the model, eligible keys, and provider limits. For agent or sandbox failures, use the sanitized stderr excerpt in the log. |
+| The review shows `reconciliation_required` | GitHub may have accepted a comment before delivery could be confirmed locally. The worker checks for the original comment and keeps the PR's review slot occupied. Follow the [publication reconciliation runbook](docs/operations.md#publication-reconciliation-runbook). |
 
-```toml
-model = "orcarouter/auto"
-model_provider = "orcarouter"
+Deploy a single service replica with persistent SQLite storage. See [deployment and operations](docs/operations.md) for HTTPS, backups, rollout checks, and key-pool governance.
 
-[model_providers.orcarouter]
-name     = "OrcaRouter"
-base_url = "https://api.orcarouter.ai/v1"
-wire_api = "responses"
-env_key  = "ORCA_KEY"
-```
-
-Both reviewer engines support OrcaRouter seamlessly:
-- **`opencode`**: Dynamically receives a custom `orcarouter` provider in its sandbox `opencode.json` (`@ai-sdk/openai-compatible` at `https://api.orcarouter.ai/v1`) with the pooled key injected via the isolated auth store. The `opencode2` executable name is compatible.
-- **`pi`**: Dynamically receives a custom `orcarouter` provider in `models.json` under its isolated sandbox directory (`baseUrl: https://api.orcarouter.ai/v1`, using OpenAI-compatible chat completions) alongside its auth store.
-
-To route reviews through OrcaRouter, keep the default `ZEN_DEFAULT_MODEL=orcarouter/auto` (or switch model dynamically at `/admin/settings`), and connect or add OrcaRouter API keys.
-
-### OrcaRouter Partner Integration & Connect Flow
-
-The bot integrates with OrcaRouter's partner dashboard at `/admin/partner`:
-- **Referral attribution**: Preconfigured with partner referral code `ref_b7dd35655fa712a6b8b0` (override with `ORCAROUTER_REFERRAL_CODE`). New accounts signing up via your link (`https://www.orcarouter.ai/ref/ref_b7dd35655fa712a6b8b0`) are credited automatically.
-- **Connect with OrcaRouter**: Administrators can click the drop-in **Connect with OrcaRouter** button at `/admin/partner`. The server mints a secure PKCE challenge (`/orca/connect-url`), redirects to consent, and exchanges the authorization code server-side (`/auth/orca/callback`). The API key never touches the browser and is encrypted straight into SQLite.
-
-Build and verify the frontend plus single binary:
+## Develop and build
 
 ```bash
 mise exec -- make check
 mise exec -- make build
 ```
 
-The binary is written to `bin/samik-bot`. `web/dist` is the Vite production build embedded into
-the binary (`web/embed.go`, SPA fallback in `internal/server`). Go builds omit local source paths and
-VCS checkout state. For frontend development, keep `mise exec -- make run-local` running in one
-terminal, then run `mise exec -- make web-dev` in a second terminal; Vite listens on `:5173` and
-proxies `/api`, `/auth`, `/healthz`, and `/webhooks` to the local Go server on `:8080`.
+`make check` verifies Go formatting, runs `go vet` and Go tests, builds the dashboard, and builds the binary. `make build` embeds the React dashboard in `bin/samik-bot`. For frontend development, run `mise exec -- make web-dev` in a second terminal while the Go service runs locally. Vite listens on port `5173` and proxies the API, OAuth, health, and webhook routes to port `8080`.
 
-## GitHub App setup (click-by-click)
+| Location | Responsibility |
+| --- | --- |
+| [cmd/samik-bot](cmd/samik-bot) | Service wiring and startup |
+| [internal/server](internal/server) and [internal/gh](internal/gh) | GitHub webhooks and REST, OAuth, dashboard API, and OrcaRouter Connect |
+| [internal/bot](internal/bot), [internal/runner](internal/runner), and [internal/review](internal/review) | Review queue workers, sandboxed execution, findings parsing, and publication |
+| [internal/store](internal/store) and [internal/pool](internal/pool) | SQLite persistence, encrypted credentials, and key selection |
+| [web](web) | React dashboard and embedded frontend assets |
 
-You need **two** GitHub-side registrations: a GitHub App (webhooks and review comments) and a
-GitHub OAuth App (dashboard login). They are separate registrations.
-
-### 1. Create the GitHub App
-
-1. GitHub → Settings (your org/user) → Developer settings → GitHub Apps → New GitHub App.
-2. Name: `samik-bot` (must be globally unique; add a suffix if taken).
-3. Homepage URL: your `PUBLIC_URL` (e.g. `https://bot.example.com`).
-4. Webhook URL: `https://<host>/webhooks/github`. Webhook secret: generate
-   (`openssl rand -hex 32`) and save as `GITHUB_WEBHOOK_SECRET`.
-5. Repository permissions: `Contents: read`, `Pull requests: read & write`, and `Issues: read &
-   write`. The Issues permission covers issue/PR summary comments and comment reactions; Metadata
-   is provided automatically.
-6. Subscribe to the `Issue comment` event. The current implementation is mention-triggered and
-   ignores other webhook event types.
-7. Create → note the **App ID** → `GITHUB_APP_ID`.
-8. Generate a private key → save the `.pem` → `GITHUB_APP_PRIVATE_KEY_PATH`.
-9. Install the App on the repos you want reviewed (App page → Install App). Record the immutable
-   numeric installation and repository IDs from GitHub's API or delivery metadata, then set
-   `ALLOWED_GITHUB_INSTALLATION_IDS` and `ALLOWED_GITHUB_REPOSITORY_IDS` before enabling reviews.
-
-### 2. Create the OAuth App (dashboard login)
-
-1. Developer settings → OAuth Apps → New OAuth App.
-2. Homepage URL: `PUBLIC_URL`. Authorization callback URL:
-   `https://<host>/auth/github/callback`.
-3. Note **Client ID** → `GITHUB_OAUTH_CLIENT_ID`, generate **Client secret** →
-   `GITHUB_OAUTH_CLIENT_SECRET`.
-
-### 3. Configure + run
-
-```bash
-SESSION_SECRET=$(openssl rand -hex 32)   # 32+ random bytes
-```
-
-Fill `.env` (all names in `.env.example`), then run `mise exec -- make run-local`. Set
-`ADMIN_GITHUB_IDS` to one or more trusted numeric GitHub user IDs **before** starting the service;
-there is no first-user administrator bootstrap. Add optional review-only IDs with
-`REVIEWER_GITHUB_IDS`. Every requester, including an administrator, must log into the dashboard once
-with GitHub before the bot will review their PR, and every request must match both target allowlists.
-Do not set `ADMIN_GITHUB_LOGINS`: a non-empty legacy login allowlist is rejected at startup. Add
-organization-authorized gateway keys at `/admin/keys`. If the GitHub App login differs from the default,
-set `BOT_USERNAME` to its mentionable login without a leading `@`.
-
-### 4. Try it
-
-Open a PR on an installed repo, comment `@samik-bot review please`, expect a 👀 reaction,
-then a summary comment with a Mermaid sequence diagram followed by inline findings. Unregistered
-commenters get a register-here reply.
-
-## Configuration
-
-| Var | Required | Default | Notes |
-|---|---|---|---|
-| `PORT` | no | `8080` | HTTP listen port |
-| `PUBLIC_URL` | no | `http://localhost:$PORT` | Absolute HTTP(S) URL without credentials, query, or fragment; HTTPS is required outside loopback development |
-| `DB_PATH` | no | `samik-bot.db` | SQLite database path; production must place its directory on persistent storage |
-| `GITHUB_APP_ID` | yes | — | GitHub App ID |
-| `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_PRIVATE_KEY_PATH` | yes (at least one) | — | Inline PEM or path; a non-empty file path takes precedence |
-| `GITHUB_WEBHOOK_SECRET` | yes | — | HMAC secret for `/webhooks/github` |
-| `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` | for a usable website | — | OAuth app; login routes return 503 without both values |
-| `SESSION_SECRET` | yes | — | Use 32+ random bytes to derive pooled-key encryption; retain it while the DB exists |
-| `ADMIN_GITHUB_IDS` | yes | — | Comma-separated immutable numeric GitHub user IDs; administrators can manage the dashboard and request reviews |
-| `REVIEWER_GITHUB_IDS` | no | empty | Additional comma-separated numeric GitHub user IDs that can request, but not administer, reviews |
-| `ALLOWED_GITHUB_INSTALLATION_IDS` | yes | — | Comma-separated numeric GitHub App installation IDs; each review target must match |
-| `ALLOWED_GITHUB_REPOSITORY_IDS` | yes | — | Comma-separated numeric GitHub repository IDs; each review target must match |
-| `BOT_USERNAME` | no | `samik-bot` | Valid GitHub login without `@`; mention trigger is case-insensitive |
-| `ZEN_DEFAULT_MODEL` | yes | `orcarouter/auto` | Current enabled `provider/model` identifier; initial value, overridable at `/admin/settings`. Preconfigured for OrcaRouter (`orcarouter/auto`); `opencode/…` routes to OpenCode Zen |
-| `ORCAROUTER_REFERRAL_CODE` | no | `ref_b7dd35655fa712a6b8b0` | Partner referral code baked into the OrcaRouter connect URLs minted at `/orca/connect-url` and shown at `/admin/partner` |
-| `REVIEW_CONCURRENCY` | no | `2` | Worker pool size; must be at least 1 |
-| `REVIEW_TIMEOUT_MINUTES` | no | `20` | Per-review hard timeout; must be at least 1 |
-| `ZEN_COOLDOWN_MINUTES` | no | `60` | Cooldown after a gateway quota/rate-limit error; must be at least 1 |
-| `USER_REVIEWS_PER_HOUR` | no | `6` | Per-requester admission limit; must be at least 1 |
-| `REPO_REVIEWS_PER_HOUR` | no | `30` | Per-repository admission limit; must be at least 1 |
-| `MAX_ACTIVE_REVIEWS` | no | `50` | Maximum queued or running reviews; must be at least 1 |
-| `OPENCODE_BIN` | for the `opencode` engine | `opencode` | Must name an OpenCode `opencode` or `opencode2` executable; an absolute path must be inside the runtime directory |
-| `OPENCODE_RUNTIME_DIR` | for the `opencode` engine | — | Absolute trusted runtime root; the default binary is `$OPENCODE_RUNTIME_DIR/bin/opencode` |
-| `REVIEW_ENGINE` | no | `opencode` | Reviewer engine: `opencode` or `pi`; `opencode2` is accepted for compatibility, and each engine's runtime config is validated and staged separately |
-| `PI_BIN` | for the `pi` engine | `pi` | Must name a `pi` executable; an absolute path must be inside the pi runtime directory |
-| `PI_RUNTIME_DIR` | for the `pi` engine | — | Absolute trusted runtime root holding `bin/pi`, `bin/node`, and the pi package files |
-| `BUBBLEWRAP_BIN` | yes | — | Bubblewrap executable path or command resolving to a trusted executable |
-| `LOG_LEVEL` | no | `info` | Service log level: `debug`, `info`, `warn`, or `error` |
-
-GitHub ID lists accept positive decimal IDs separated by commas (whitespace is allowed); duplicates
-and login names are rejected. Obtain the numeric `id` values from GitHub API responses or webhook
-delivery metadata, not from a mutable login or GraphQL node ID. A non-empty `ADMIN_GITHUB_LOGINS`
-value is rejected as unsafe.
-
-Every review runs under a mandatory Bubblewrap boundary. At review time, the runner requires a
-trusted runtime directory with no symlinked, group-writable, or world-writable entries, and a trusted
-non-symlink Bubblewrap executable. It bind-mounts the runtime and PR checkout read-only; it never
-falls back to executing the reviewer engine directly when that boundary cannot be established.
-
-Gateway API keys are intentionally entered by an authenticated administrator at `/admin/keys`, not via
-an environment variable. The database stores them encrypted, but the database and `SESSION_SECRET`
-must be retained together; replacing the secret makes existing stored keys unreadable.
-
-## Deployment and operations
-
-Read [deployment and operations](docs/operations.md) before exposing the webhook. It covers HTTPS,
-secret handling, persistent SQLite storage, supported OpenCode V2 runtime expectations, key-pool
-governance, backups, and the single-replica deployment constraint.
-
-## API (dashboard)
-
-All JSON, session cookie `samik_session`:
-
-- `GET /api/me` → `{id, login, avatar_url, is_admin}`
-- `GET /api/reviews` → last 50 `[{id, repo_full, pr_number, head_sha, requester_login, status, model, summary_md, error, summary_comment_id, created_at, findings_count}]`
-- `GET /api/reviews/{id}` → `{review, findings: [{path, line, side, severity, body, posted_comment_id}]}`
-- Admin: `GET/POST /api/admin/keys`, `PATCH/DELETE /api/admin/keys/{id}` (`{disabled}`),
-  `GET/POST /api/admin/settings` (`{model}`). Keys are never returned unmasked (only `last4`).
-
-## Repo layout
-
-- `cmd/samik-bot/main.go` — wiring: config → App auth → store → key pool → engine → server
-- `internal/config` — env parsing; `internal/store` — SQLite + migrations
-  (`users`, `sessions`, `zen_keys`, `reviews`, `findings`, `nudges`, `settings`)
-- `internal/gh` — App JWT → installation token, REST (PR/files/diff/comments/reactions),
-  webhook HMAC, OAuth exchange; `internal/server` — webhook handler, OAuth, admin JSON API, SPA
-- `internal/pool` — least-used eligible-key selection + configurable cooldown; `internal/runner` —
-  shallow clone + Bubblewrap sandbox + isolated reviewer exec (`opencode` or pi) + final-message extraction
-- `internal/review` — prompt contract, tolerant findings parser, diff→line mapping
-- `internal/bot` — engine: fetch → runWithPool (one quota retry) → prepare and post the summary
-  publication before inline findings → finish/fail
-- `web/` — Vite + React + TS + TanStack Router/Query + shadcn-style UI (see above)
-
-## Verification
-
-- `mise exec -- make check` runs Go formatting verification, `go vet`, Go tests, the frontend
-  build, and a production binary build.
-- A live review can incur gateway charges (OpenCode Zen or OrcaRouter). Use an authorized funded test key, add it at
-  `/admin/keys`, comment `@samik-bot` on a test PR, and watch `/dashboard` go queued →
-  running → done (or failed, with the cause on the review detail page).
+The dashboard uses the `samik_session` cookie. Its JSON API provides `GET /api/me`, `GET /api/reviews` (up to 50 visible reviews), and `GET /api/reviews/{id}` (`review`, `findings`, and `events`). Administrators manage masked keys at `/api/admin/keys`, the active model at `/api/admin/settings`, and partner information at `/api/admin/partner`.
