@@ -23,14 +23,14 @@ func poolStore(t *testing.T) *store.Store {
 
 func TestAcquireRotatesAcrossKeys(t *testing.T) {
 	s := poolStore(t)
-	s.AddKey("a", "sk-aaaa1111")
-	s.AddKey("b", "sk-bbbb2222")
-	s.AddKey("c", "sk-cccc3333")
+	s.AddKey("a", "sk-aaaa1111", "opencode")
+	s.AddKey("b", "sk-bbbb2222", "opencode")
+	s.AddKey("c", "sk-cccc3333", "opencode")
 	p := New(s, time.Hour)
 
 	counts := map[int64]int{}
 	for i := 0; i < 9; i++ {
-		k, err := p.Acquire()
+		k, err := p.Acquire("opencode")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,20 +48,20 @@ func TestAcquireRotatesAcrossKeys(t *testing.T) {
 
 func TestAcquireSkipsCooldownAndDisabled(t *testing.T) {
 	s := poolStore(t)
-	a, _ := s.AddKey("a", "sk-aaaa1111")
-	b, _ := s.AddKey("b", "sk-bbbb2222")
+	a, _ := s.AddKey("a", "sk-aaaa1111", "opencode")
+	b, _ := s.AddKey("b", "sk-bbbb2222", "opencode")
 	p := New(s, time.Hour)
 
 	s.CoolKey(a.ID, time.Now().UTC().Add(time.Hour))
 	s.DisableKey(b.ID, true)
-	if _, err := p.Acquire(); !errors.Is(err, ErrEmpty) {
+	if _, err := p.Acquire("opencode"); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
 }
 
 func TestExhaustedCoolsDown(t *testing.T) {
 	s := poolStore(t)
-	a, _ := s.AddKey("a", "sk-aaaa1111")
+	a, _ := s.AddKey("a", "sk-aaaa1111", "opencode")
 	p := New(s, time.Hour)
 
 	if err := p.Exhausted(a.ID); err != nil {
@@ -71,7 +71,7 @@ func TestExhaustedCoolsDown(t *testing.T) {
 	if len(cands) != 0 {
 		t.Fatalf("cooled key still a candidate: %+v", cands)
 	}
-	if _, err := p.Acquire(); !errors.Is(err, ErrEmpty) {
+	if _, err := p.Acquire("opencode"); !errors.Is(err, ErrEmpty) {
 		t.Fatalf("err = %v, want ErrEmpty", err)
 	}
 }
@@ -86,7 +86,7 @@ func TestNewUsesFixedDefaultCooldown(t *testing.T) {
 func TestAcquireAtomicallyBalancesConcurrentWorkers(t *testing.T) {
 	s := poolStore(t)
 	for _, label := range []string{"a", "b", "c"} {
-		if _, err := s.AddKey(label, "sk-"+label+"1234"); err != nil {
+		if _, err := s.AddKey(label, "sk-"+label+"1234", "opencode"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,7 +102,7 @@ func TestAcquireAtomicallyBalancesConcurrentWorkers(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			key, err := p.Acquire()
+			key, err := p.Acquire("opencode")
 			if err != nil {
 				errs <- err
 				return
@@ -129,5 +129,33 @@ func TestAcquireAtomicallyBalancesConcurrentWorkers(t *testing.T) {
 		if count != requests/3 {
 			t.Fatalf("key %d used %d times, want %d", id, count, requests/3)
 		}
+	}
+}
+
+func TestAcquireUsesRequestedGateway(t *testing.T) {
+	s := poolStore(t)
+	p := New(s, time.Hour)
+	zen, err := s.AddKey("zen", "sk-zen-1234", "opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orca, err := s.AddKey("orca", "sk-orca-1234", "orcarouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []*store.ZenKey{orca, orca, zen} {
+		key, err := p.Acquire(want.Gateway)
+		if err != nil || key.ID != want.ID {
+			t.Fatalf("acquire %s = %+v, %v", want.Gateway, key, err)
+		}
+	}
+	if err := p.Exhausted(orca.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Acquire("orcarouter"); !errors.Is(err, ErrEmpty) {
+		t.Fatalf("acquire cooled OrcaRouter key returned %v, want ErrEmpty", err)
+	}
+	if usage, err := s.CountUsage(zen.ID); err != nil || usage != 1 {
+		t.Fatalf("Zen key usage = %d, %v", usage, err)
 	}
 }

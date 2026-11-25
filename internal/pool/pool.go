@@ -1,4 +1,4 @@
-// Package pool hands out OpenCode Zen API keys, balancing configured request
+// Package pool hands out gateway API keys, balancing configured request
 // load while cooling keys after provider quota or rate-limit failures.
 package pool
 
@@ -10,7 +10,7 @@ import (
 )
 
 // ErrEmpty is returned when no usable key exists.
-var ErrEmpty = errors.New("no usable Zen API keys in the pool")
+var ErrEmpty = errors.New("no usable keys for the review gateway")
 
 const defaultCooldown = time.Hour
 
@@ -29,8 +29,8 @@ func New(st *store.Store, cooldown time.Duration) *Pool {
 }
 
 // Acquire picks the key with the fewest requests today and records one use.
-func (p *Pool) Acquire() (*store.ZenKey, error) {
-	k, err := p.st.AcquireKey()
+func (p *Pool) Acquire(gateway string) (*store.ZenKey, error) {
+	k, err := p.st.AcquireKey(gateway)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrEmpty
 	}

@@ -184,7 +184,7 @@ func TestHeadChangeSkipsAllResultComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if _, err := st.AddKey("key", "sk-test-1234"); err != nil {
+	if _, err := st.AddKey("key", "sk-test-1234", "opencode"); err != nil {
 		t.Fatal(err)
 	}
 	rev := &store.Review{
@@ -715,7 +715,7 @@ func newReviewFailureHarness(t *testing.T, runErr error, logOut *bytes.Buffer) (
 
 	app := newBotTestApp(t, github.URL)
 	st := testStoreForEngine(t)
-	if _, err := st.AddKey("key", "sk-test-1234"); err != nil {
+	if _, err := st.AddKey("key", "sk-test-1234", "opencode"); err != nil {
 		t.Fatal(err)
 	}
 	rev := &store.Review{
@@ -752,6 +752,30 @@ func newReviewFailureHarness(t *testing.T, runErr error, logOut *bytes.Buffer) (
 	eng.startMu.Unlock()
 	t.Cleanup(func() { _, _ = st.ReleaseServiceLease(lease.OwnerToken, lease.Fence) })
 	return rev, eng, st, h
+}
+
+func TestReviewUsesGatewayForSelectedModel(t *testing.T) {
+	rev, eng, st, _ := newReviewFailureHarness(t, nil, nil)
+	const model = "orcarouter/auto"
+	const secret = "sk-test-orca-1234"
+	if err := st.SetSetting("model", model); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddKey("orca", secret, runner.ProviderOrcaRouter); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	eng.run = func(_ context.Context, opts runner.Options) (string, error) {
+		calls++
+		if opts.Model != model || opts.APIKey != secret {
+			t.Error("review did not use the selected model and matching gateway credential")
+		}
+		return "", runner.ErrExecution
+	}
+	eng.processOne(t.Context(), rev.ID)
+	if calls != 1 {
+		t.Fatalf("reviewer calls = %d, want 1", calls)
+	}
 }
 
 func TestTerminalAgentFailureMarksReviewFailed(t *testing.T) {

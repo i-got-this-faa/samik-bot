@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jR4dh3y/samik-bot/internal/config"
+	"github.com/jR4dh3y/samik-bot/internal/runner"
 	"github.com/jR4dh3y/samik-bot/internal/store"
 )
 
@@ -201,7 +202,7 @@ func (s *Server) canViewReview(u *store.User, rev store.Review) bool {
 	return rev.RequesterGitHubID == u.GitHubID && s.cfg.CanRequestReview(u.GitHubID, rev.InstallationID, rev.RepositoryID)
 }
 
-// handleListKeys lists masked Zen keys.
+// handleListKeys lists masked gateway keys.
 func (s *Server) handleListKeys(u *store.User, w http.ResponseWriter, r *http.Request) {
 	keys, err := s.st.ListKeys()
 	if err != nil {
@@ -214,45 +215,72 @@ func (s *Server) handleListKeys(u *store.User, w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, keys)
 }
 
-// handleAddKey stores a new Zen key.
+func validKeyGateway(gateway string) bool {
+	return gateway == runner.ProviderOpenCode || gateway == runner.ProviderOrcaRouter
+}
+
+// handleAddKey stores a new gateway key. Older clients that omit the gateway
+// add a key for the model configured at the time of the request.
 func (s *Server) handleAddKey(u *store.User, w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Label  string `json:"label"`
-		Secret string `json:"secret"`
+		Label   string `json:"label"`
+		Secret  string `json:"secret"`
+		Gateway string `json:"gateway"`
 	}
 	if err := decodeJSONBody(w, r, &body); err != nil || body.Secret == "" {
-		writeErr(w, http.StatusBadRequest, "label and secret required")
+		writeErr(w, http.StatusBadRequest, "secret required")
+		return
+	}
+	if body.Gateway == "" {
+		body.Gateway = runner.GatewayProviderForModel(s.st.GetSetting("model", s.cfg.DefaultModel))
+	}
+	if !validKeyGateway(body.Gateway) {
+		writeErr(w, http.StatusBadRequest, "gateway must be opencode or orcarouter")
 		return
 	}
 	if body.Label == "" {
-		body.Label = "zen-key"
+		body.Label = body.Gateway + "-key"
 	}
-	k, err := s.st.AddKey(body.Label, body.Secret)
+	k, err := s.st.AddKey(body.Label, body.Secret, body.Gateway)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store failed")
 		return
 	}
-	s.log.Info("zen key added", "id", k.ID, "label", k.Label)
+	s.log.Info("gateway key added", "id", k.ID, "label", k.Label, "gateway", k.Gateway)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": k.ID, "label": k.Label, "last4": k.Last4,
+		"id": k.ID, "label": k.Label, "last4": k.Last4, "gateway": k.Gateway,
 	})
 }
 
-// handleKeyPatch toggles a key disabled.
+// handleKeyPatch toggles a key or assigns a gateway to a legacy key.
 func (s *Server) handleKeyPatch(u *store.User, w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "bad id")
+		writeErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var body struct {
-		Disabled *bool `json:"disabled"`
+		Disabled *bool   `json:"disabled"`
+		Gateway  *string `json:"gateway"`
 	}
-	if err := decodeJSONBody(w, r, &body); err != nil || body.Disabled == nil {
-		writeErr(w, http.StatusBadRequest, "disabled required")
+	if err := decodeJSONBody(w, r, &body); err != nil || (body.Disabled == nil) == (body.Gateway == nil) {
+		writeErr(w, http.StatusBadRequest, "provide either disabled or gateway")
 		return
 	}
-	if err := s.st.DisableKey(id, *body.Disabled); err != nil {
+	if body.Gateway != nil {
+		if !validKeyGateway(*body.Gateway) {
+			writeErr(w, http.StatusBadRequest, "gateway must be opencode or orcarouter")
+			return
+		}
+		err = s.st.AssignKeyGateway(id, *body.Gateway)
+	} else {
+		err = s.st.DisableKey(id, *body.Disabled)
+	}
+	if errors.Is(err, store.ErrKeyGatewayConflict) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store failed")
 		return
 	}

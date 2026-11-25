@@ -69,8 +69,8 @@ Run the health check from a second terminal while the service is running. A `{"s
 ### 4. Connect a gateway key and test
 
 1. Sign in at `PUBLIC_URL` as a user listed in `ADMIN_GITHUB_IDS`.
-2. Add an authorized gateway key at `/admin/keys`, or use **Connect with OrcaRouter** at `/admin/partner` to add an OrcaRouter key through the provider's consent flow. The server stores pooled keys encrypted in SQLite.
-3. Check the active model at `/admin/settings`. Use OrcaRouter keys for `orcarouter/…` models and OpenCode Zen keys for `opencode/…` models. The pool selects the least-used eligible key across the entire pool, so use keys from a single gateway and switch the pool and model together.
+2. Add an authorized key at `/admin/keys` and select the gateway that issued it, or use **Connect with OrcaRouter** at `/admin/partner` to add an OrcaRouter key through the provider's consent flow. The server stores pooled keys encrypted in SQLite.
+3. Check the active model at `/admin/settings`. Use OrcaRouter keys for `orcarouter/…` models and OpenCode Zen keys for `opencode/…` models. The pool selects the least-used eligible key for the model’s gateway. If you are upgrading an existing instance, assign a gateway to each legacy credential at `/admin/keys` before requesting a review.
 4. Request a review on a test PR and watch the status move from `queued` to `running` to `done`. Live reviews can incur gateway charges.
 
 ## Configuration

@@ -6,13 +6,13 @@ import (
 	"time"
 )
 
-// ZenKey is a pooled OpenCode Zen API key. Plaintext never leaves this
-// package; callers get the decrypted key via ZenKey.Secret.
+// ZenKey is a pooled gateway API key. Secret is for server-side use only.
 type ZenKey struct {
 	ID            int64
 	Label         string
 	Secret        string // decrypted, for runner use only
 	Last4         string
+	Gateway       string
 	RequestsToday int
 	CooldownUntil time.Time
 	Disabled      bool
@@ -24,6 +24,7 @@ type MaskedZenKey struct {
 	ID            int64      `json:"id"`
 	Label         string     `json:"label"`
 	Last4         string     `json:"last4"`
+	Gateway       string     `json:"gateway"`
 	RequestsToday int        `json:"requests_today"`
 	CooldownUntil *time.Time `json:"cooldown_until"`
 	Disabled      bool       `json:"disabled"`
@@ -35,7 +36,7 @@ func scanKey(row interface{ Scan(...any) error }, enc KeyCipher) (*ZenKey, error
 	var k ZenKey
 	var ct, cooldown, createdAt string
 	var disabledAt sql.NullString
-	err := row.Scan(&k.ID, &k.Label, &ct, &k.Last4, &k.RequestsToday, &cooldown, &disabledAt, &createdAt)
+	err := row.Scan(&k.ID, &k.Label, &ct, &k.Last4, &k.Gateway, &k.RequestsToday, &cooldown, &disabledAt, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -53,10 +54,10 @@ func scanKey(row interface{ Scan(...any) error }, enc KeyCipher) (*ZenKey, error
 	return &k, nil
 }
 
-const keyCols = `id, label, ciphertext, last4, requests_today, cooldown_until, disabled_at, created_at`
+const keyCols = `id, label, ciphertext, last4, gateway, requests_today, cooldown_until, disabled_at, created_at`
 
-// AddKey stores a new encrypted Zen key.
-func (s *Store) AddKey(label, secret string) (*ZenKey, error) {
+// AddKey stores a new encrypted key for its gateway.
+func (s *Store) AddKey(label, secret, gateway string) (*ZenKey, error) {
 	ct, err := s.keyEnc.Seal(secret)
 	if err != nil {
 		return nil, err
@@ -65,8 +66,8 @@ func (s *Store) AddKey(label, secret string) (*ZenKey, error) {
 	if len(last4) > 4 {
 		last4 = last4[len(last4)-4:]
 	}
-	res, err := s.db.Exec(`INSERT INTO zen_keys (label, ciphertext, last4, created_at) VALUES (?, ?, ?, ?)`,
-		label, ct, last4, now())
+	res, err := s.db.Exec(`INSERT INTO zen_keys (label, ciphertext, last4, gateway, created_at) VALUES (?, ?, ?, ?, ?)`,
+		label, ct, last4, gateway, now())
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +79,10 @@ func (s *Store) Key(id int64) (*ZenKey, error) {
 	return scanKey(s.db.QueryRow(`SELECT `+keyCols+` FROM zen_keys WHERE id = ?`, id), s.keyEnc)
 }
 
-// AcquireKey atomically selects the least-used eligible key and records its
+// AcquireKey atomically selects the least-used eligible key for a gateway and records its
 // use. Selection and increment must share one statement so concurrent workers
 // cannot all choose the same key before any usage is recorded.
-func (s *Store) AcquireKey() (*ZenKey, error) {
+func (s *Store) AcquireKey(gateway string) (*ZenKey, error) {
 	return scanKey(s.db.QueryRow(`
 UPDATE zen_keys
 SET requests_today = `+todayUTC+` + 1,
@@ -89,12 +90,12 @@ SET requests_today = `+todayUTC+` + 1,
 WHERE id = (
 	SELECT id
 	FROM zen_keys
-	WHERE disabled_at = ''
+	WHERE gateway = ? AND gateway <> '' AND disabled_at = ''
 	  AND (cooldown_until = '' OR cooldown_until <= ?)
 	ORDER BY `+todayUTC+` ASC, id ASC
 	LIMIT 1
 )
-RETURNING `+keyCols, now()), s.keyEnc)
+RETURNING `+keyCols, gateway, now()), s.keyEnc)
 }
 
 // ListKeys returns masked keys newest-first for the admin UI.
@@ -111,7 +112,7 @@ func (s *Store) ListKeys() ([]MaskedZenKey, error) {
 			return nil, err
 		}
 		m := MaskedZenKey{
-			ID: k.ID, Label: k.Label, Last4: k.Last4,
+			ID: k.ID, Label: k.Label, Last4: k.Last4, Gateway: k.Gateway,
 			RequestsToday: k.RequestsToday, Disabled: k.Disabled, CreatedAt: k.CreatedAt,
 		}
 		if !k.CooldownUntil.IsZero() {
@@ -121,6 +122,21 @@ func (s *Store) ListKeys() ([]MaskedZenKey, error) {
 	}
 	return out, rows.Err()
 }
+
+// AssignKeyGateway records the issuer of a legacy key. Repeating the same
+// assignment is safe, but an existing assignment cannot be changed.
+func (s *Store) AssignKeyGateway(id int64, gateway string) error {
+	var assignedID int64
+	err := s.db.QueryRow(`UPDATE zen_keys SET gateway = ?
+		WHERE id = ? AND ? <> '' AND gateway IN ('', ?) RETURNING id`,
+		gateway, id, gateway, gateway).Scan(&assignedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrKeyGatewayConflict
+	}
+	return err
+}
+
+var ErrKeyGatewayConflict = errors.New("key is missing or already assigned to a different gateway")
 
 // DeleteKey removes a key.
 func (s *Store) DeleteKey(id int64) error {
@@ -135,7 +151,7 @@ const todayUTC = `(CASE WHEN usage_date = strftime('%Y-%m-%d','now') THEN reques
 // by fewest requests today first.
 func (s *Store) PoolCandidates() ([]ZenKey, error) {
 	rows, err := s.db.Query(`SELECT `+keyCols+` FROM zen_keys
-		WHERE disabled_at = ''
+		WHERE gateway <> '' AND disabled_at = ''
 		  AND (cooldown_until = '' OR cooldown_until <= ?)
 		ORDER BY `+todayUTC+` ASC, id ASC`, now())
 	if err != nil {

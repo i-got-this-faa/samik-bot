@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS zen_keys (
 	label           TEXT NOT NULL,
 	ciphertext      TEXT NOT NULL,
 	last4           TEXT NOT NULL,
+	gateway         TEXT NOT NULL DEFAULT '' CHECK (gateway IN ('', 'opencode', 'orcarouter')),
 	requests_today  INTEGER NOT NULL DEFAULT 0,
 	usage_date      TEXT NOT NULL DEFAULT '',
 	cooldown_until  TEXT NOT NULL DEFAULT '',
@@ -215,6 +216,12 @@ CREATE TABLE IF NOT EXISTS service_leases (
 );
 `)
 	if err != nil {
+		return err
+	}
+	// Legacy rows have no reliable issuer metadata. Preserve their usage and
+	// ciphertext until an administrator assigns the correct gateway.
+	if err := ensureColumn(tx, "zen_keys", "gateway",
+		"gateway TEXT NOT NULL DEFAULT '' CHECK (gateway IN ('', 'opencode', 'orcarouter'))"); err != nil {
 		return err
 	}
 	if err := ensureColumn(tx, "oauth_states", "client_hash", "client_hash TEXT NOT NULL DEFAULT ''"); err != nil {
