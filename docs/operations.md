@@ -31,14 +31,15 @@ OpenCode V2 CLI, rather than assuming a Docker image or a particular PaaS integr
    OpenCode binary's `--version` output with the application release, and promote that same version
    through staging before production.
 3. Create the GitHub App and separate OAuth App as described in the README. Install the App only on
-   repositories it is allowed to review. The webhook must reach
+   repositories it is allowed to review. Follow the [GitHub App setup](../README.md#2-register-the-github-app-and-oauth-app)
+   to find the installed bot account's numeric user ID. The webhook must reach
    `https://<public-host>/webhooks/github` over HTTPS.
 4. Put every secret in the deployment platform's secret manager: the GitHub App private key,
    webhook secret, OAuth secret, and `SESSION_SECRET`. Never put them in an image, a repository,
    a command line, or application logs. A private-key file supplied through
    `GITHUB_APP_PRIVATE_KEY_PATH` should be readable only by the service account.
-5. Set every required variable in the [configuration table](../README.md#configuration): GitHub App
-   credentials, `SESSION_SECRET`, `ADMIN_GITHUB_IDS`, both GitHub target allowlists,
+5. Use the [configuration table](../README.md#configuration) to set the GitHub App credentials,
+   `BOT_GITHUB_ID`, `SESSION_SECRET`, `ADMIN_GITHUB_IDS`, both GitHub target allowlists,
    `ZEN_DEFAULT_MODEL`, the active engine's runtime dir (`OPENCODE_RUNTIME_DIR` for the default
    `opencode` engine, `PI_RUNTIME_DIR` when `REVIEW_ENGINE=pi`), and `BUBBLEWRAP_BIN`. Configure
    both OAuth values as well: startup permits them to be absent, but users cannot register or log
@@ -54,12 +55,11 @@ Run one service process with environment variables injected by the platform. Sta
 rebuilds the dashboard and therefore requires Go and Bun. `make run-local` is deliberately a
 local-development convenience that sources `.env`. The binary itself does not read dotenv files.
 
-The application always runs stable OpenCode V2 in standalone mode. `OPENCODE_BIN` must have the
-basename `opencode` or the compatibility name `opencode2`; a relative name is resolved below
-`OPENCODE_RUNTIME_DIR/bin`, and an absolute path must be inside that directory.
-`OPENCODE_RUNTIME_DIR` and `BUBBLEWRAP_BIN` are required configuration values, not optional tuning
-knobs. Configuration loading detects missing paths; individual reviews also verify the runtime tree
-and Bubblewrap capability before executing untrusted PR content.
+The default OpenCode reviewer runs V2 in standalone mode. Use the basename `opencode` or
+`opencode2` for `OPENCODE_BIN`. A relative name resolves under `OPENCODE_RUNTIME_DIR/bin`, and
+an absolute path must be inside the runtime directory. Both engines require `BUBBLEWRAP_BIN` and
+their own runtime directory. The service checks the runtime and launches a sandboxed CLI probe at
+startup, then checks the runtime again before running each review.
 
 ### Reviewer engine selection
 
@@ -74,7 +74,7 @@ The compatibility value `opencode2` is normalized to the same stable OpenCode en
 - The pi runtime tree satisfies the same read-only trust rules (no symlinked, group-writable, or
   world-writable entries). Because pi is a Node CLI, stage the `node` executable inside the tree
   and give `bin/pi` an absolute shebang such as `#!/opt/pi-runtime/bin/node`; the sandbox has no
-  host `/usr/bin/env`. See the README's pi staging recipe.
+  host `/usr/bin/env`. See [Run reviews with pi](../README.md#run-reviews-with-pi).
 - Startup preflight runs `pi --version` and `pi --list-models <gateway>` inside the same Bubblewrap
   profile used for reviews, where `<gateway>` is the provider prefix of the configured
   `ZEN_DEFAULT_MODEL` (`opencode` for Zen, `orcarouter` for OrcaRouter). The catalog probe proves
@@ -111,9 +111,8 @@ HTTP port. HTTP `localhost` is suitable only for local development.
 The host process needs outbound access to GitHub for App/OAuth/API operations. The review sandbox
 shares network access so OpenCode can reach its configured Zen/provider endpoint; Bubblewrap cannot
 express hostname allowlists, so enforce provider-only sandbox egress with host or network policy.
-The review runner makes a temporary checkout per job and invokes `opencode` (or the compatible
-`opencode2` executable name) with isolated
-configuration; allow enough temporary disk and process capacity for the largest PR that the service
+The review runner makes a temporary checkout per job and invokes the selected reviewer with isolated
+configuration. Allow enough temporary disk and process capacity for the largest PR that the service
 policy accepts. Current defensive ceilings are a 2 MiB webhook body, a 10 MiB PR diff, rejection at
 3,000 changed files, a 5 MiB checkout blob, 100 MiB total checkout content, 10,000 checkout files,
 and 1 MiB each for agent stdout and stderr. Reviews beyond those limits fail rather than consuming
@@ -205,9 +204,10 @@ gateway keys in
 
 ## Monitoring and rollout
 
-Probe `GET /healthz` for basic process liveness. It returns a static success response and does not
-verify GitHub connectivity, the OpenCode binary, the Zen provider, or SQLite health, so also monitor
-review completion/failure rates and the dashboard queue. Alert on repeated quota failures, failed
+Probe `GET /healthz` for readiness. It returns HTTP 200 with `{"status":"ok"}` when the review
+engine is ready, its service lease is current, and SQLite responds. It returns HTTP 503 when the
+service cannot meet those checks. Use a staging review to verify GitHub, the configured reviewer, and
+the gateway end to end. Monitor review completion and failure rates and the dashboard queue. Alert on repeated quota failures, failed
 reviews, unavailable eligible keys, and unexpected restart loops. Terminal review failures log the
 operator-safe cause plus a bounded, sanitized reviewer-stderr excerpt for agent and sandbox
 failures; run with `LOG_LEVEL=debug` while diagnosing, then return to `info`.
