@@ -1173,7 +1173,7 @@ func openCodeConfig(model string) map[string]any {
 			},
 		},
 	}
-	if gatewayProviderForModel(model) == ProviderOrcaRouter {
+	if GatewayProviderForModel(model) == ProviderOrcaRouter {
 		config["provider"] = map[string]any{
 			ProviderOrcaRouter: openCodeOrcaRouterProvider(modelIDForProvider(model)),
 		}

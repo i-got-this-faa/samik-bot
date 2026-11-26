@@ -278,7 +278,7 @@ func TestOAuthStateLimitsEachClientAndAllowsRevocation(t *testing.T) {
 func TestKeyPoolRoundTrip(t *testing.T) {
 	s := testStore(t)
 
-	k1, err := s.AddKey("key-1", "sk-aaaa1111")
+	k1, err := s.AddKey("key-1", "sk-aaaa1111", "opencode")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestKeyPoolRoundTrip(t *testing.T) {
 	if k1.Last4 != "1111" {
 		t.Fatalf("last4 = %q", k1.Last4)
 	}
-	if _, err := s.AddKey("key-2", "sk-bbbb2222"); err != nil {
+	if _, err := s.AddKey("key-2", "sk-bbbb2222", "opencode"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -460,6 +460,63 @@ func TestReviewLifecyclePersistsDurablePublication(t *testing.T) {
 		got.SummaryMD != "looks good" || got.SummaryCommentID != 555 ||
 		got.ExecutionGeneration != claimed.ExecutionGeneration || !got.PublicationPrepared {
 		t.Fatalf("review mismatch: %+v", got)
+	}
+}
+
+func TestLegacyKeyGatewayMigration(t *testing.T) {
+	cipher, err := seal.New("test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/test.db"
+	s, err := Open(path, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	key, err := s.AddKey("legacy", "sk-legacy-1234", "opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordUsage(key.ID); err != nil {
+		t.Fatal(err)
+	}
+	cooldown := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
+	if err := s.CoolKey(key.ID, cooldown); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the pre-migration table shape while retaining the encrypted row.
+	if _, err := s.db.Exec(`ALTER TABLE zen_keys DROP COLUMN gateway`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, cipher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gateway := range []string{"opencode", "orcarouter"} {
+		if _, err := s.AcquireKey(gateway); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("acquire unassigned key for %s = %v", gateway, err)
+		}
+	}
+	keys, err := s.ListKeys()
+	if err != nil || len(keys) != 1 || keys[0].Gateway != "" || keys[0].Last4 != "1234" {
+		t.Fatalf("legacy keys = %+v, %v", keys, err)
+	}
+	for range 2 {
+		if err := s.AssignKeyGateway(key.ID, "orcarouter"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AssignKeyGateway(key.ID, "opencode"); !errors.Is(err, ErrKeyGatewayConflict) {
+		t.Fatalf("reassign legacy key = %v, want conflict", err)
+	}
+	got, err := s.Key(key.ID)
+	if err != nil || got.Secret != key.Secret || got.Gateway != "orcarouter" ||
+		got.RequestsToday != 1 || !got.CooldownUntil.Equal(cooldown) {
+		t.Fatalf("legacy key metadata did not survive assignment: %v", err)
 	}
 }
 

@@ -185,11 +185,16 @@ only from accounts that are authorized to share the same workload, budget, and d
 boundary. The dashboard's per-key request counter is an operational scheduling metric; it is not a
 provider billing record or a way to bypass provider controls.
 
-The pool serves one gateway at a time: the configured review model's provider prefix selects it
-(`opencode/…` for OpenCode Zen, `orcarouter/…` for OrcaRouter), and every key in the pool must be
-issued by that gateway. Key selection is least-used across the whole pool, so mixing gateways in
-one pool sends reviews with credentials the configured model cannot use; switch the model and the
-pool together.
+The selected review model determines which gateway supplies the key. Add keys from either gateway
+at `/admin/keys` and choose their issuer. OrcaRouter Connect assigns its gateway automatically.
+The pool uses the least-used eligible key within that gateway. Keep at least one eligible key for
+each gateway you plan to use.
+
+After upgrading an existing installation, keys created before gateway tracking appear as
+**Gateway required**. Their encrypted values, usage and cooldown stay in SQLite. Before accepting
+reviews, open `/admin/keys` and assign each key to the gateway that issued it. An unassigned key
+cannot be selected by a worker. To correct a mistaken assignment, add the key under the correct
+gateway and remove the misassigned entry.
 
 On a recognized quota, credit, or rate-limit response from either gateway, the service puts that
 key on cooldown

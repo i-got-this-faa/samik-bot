@@ -17,11 +17,11 @@ const (
 // varies per deployment.
 const OrcaRouterBaseURL = "https://api.orcarouter.ai/v1"
 
-// gatewayProviderForModel maps a review model to the gateway provider that
+// GatewayProviderForModel maps a review model to the gateway provider that
 // must hold the run's key. Every prefix except orcarouter keeps the engines'
 // built-in OpenCode Zen provider, matching the behavior before additional
 // gateways existed.
-func gatewayProviderForModel(model string) string {
+func GatewayProviderForModel(model string) string {
 	provider, id, _ := strings.Cut(model, "/")
 	if provider == ProviderOrcaRouter && id != "" {
 		return ProviderOrcaRouter

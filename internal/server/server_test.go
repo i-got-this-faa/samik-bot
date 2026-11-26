@@ -477,32 +477,49 @@ func TestAdminAPIKeysRoundTrip(t *testing.T) {
 		t.Fatalf("non-admin code = %d", rec.Code)
 	}
 
-	// Admin adds, lists, disables, deletes.
-	addReq := httptest.NewRequest(http.MethodPost, "/api/admin/keys",
-		strings.NewReader(`{"label":"k1","secret":"sk-secret-1234"}`))
-	addReq.Header.Set("Origin", s.cfg.PublicURL)
-	addReq.Header.Set("Content-Type", "application/json")
 	tok := "tok-root"
-	s.st.CreateSession(admin.ID, tok, time.Hour)
-	addReq.AddCookie(&http.Cookie{Name: "samik_session", Value: tok})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, addReq)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("add code = %d, %s", rec.Code, rec.Body.String())
+	if err := s.st.CreateSession(admin.ID, tok, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Origin", s.cfg.PublicURL)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("%s %s = %d, want %d: %s", method, path, rec.Code, want, rec.Body.String())
+		}
+		return rec
 	}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/api/admin/keys", nil)
-	getReq.AddCookie(&http.Cookie{Name: "samik_session", Value: tok})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, getReq)
-	var keys []map[string]any
-	json.NewDecoder(rec.Body).Decode(&keys)
-	if len(keys) != 1 || keys[0]["last4"] != "1234" {
-		t.Fatalf("keys = %v", keys)
-	}
+	const keysPath = "/api/admin/keys"
+	request(http.MethodPost, keysPath, `{"label":"k1","secret":"sk-secret-1234"}`, http.StatusCreated)
+	request(http.MethodPost, keysPath, `{"secret":"sk-secret-5678","gateway":"invalid"}`, http.StatusBadRequest)
+	request(http.MethodPost, keysPath, `{"label":"k2","secret":"sk-secret-5678","gateway":"orcarouter"}`, http.StatusCreated)
+	rec = request(http.MethodGet, keysPath, "", http.StatusOK)
 	if strings.Contains(rec.Body.String(), "sk-secret") {
 		t.Fatal("secret leaked in list response")
 	}
+	var keys []store.MaskedZenKey
+	if err := json.NewDecoder(rec.Body).Decode(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0].Last4 != "5678" || keys[0].Gateway != "orcarouter" ||
+		keys[1].Last4 != "1234" || keys[1].Gateway != "opencode" {
+		t.Fatalf("keys = %+v", keys)
+	}
+	keyPath := keysPath + "/" + strconv.FormatInt(keys[0].ID, 10)
+	request(http.MethodPatch, keyPath, `{"gateway":"opencode"}`, http.StatusConflict)
+	request(http.MethodPatch, keyPath, `{"gateway":"orcarouter","disabled":true}`, http.StatusBadRequest)
+	request(http.MethodPatch, keyPath, `{"disabled":true}`, http.StatusOK)
+	key, err := s.st.Key(keys[0].ID)
+	if err != nil || !key.Disabled {
+		t.Fatalf("failed to disable key: %v", err)
+	}
+	request(http.MethodDelete, keyPath, `{}`, http.StatusOK)
 }
 
 func TestAdminSettingsRejectsFreeZenModelForPi(t *testing.T) {

@@ -788,6 +788,7 @@ func (e *Engine) runWithPool(ctx context.Context, token string, r *store.Review,
 	if err := config.ValidateModelForEngine(e.cfg.ReviewEngine, model); err != nil {
 		return nil, "", err
 	}
+	gateway := runner.GatewayProviderForModel(model)
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := e.reviewSideEffectError(ctx, r); err != nil {
@@ -803,14 +804,14 @@ func (e *Engine) runWithPool(ctx context.Context, token string, r *store.Review,
 		if !current {
 			return nil, "", store.ErrReviewLeaseLost
 		}
-		key, err := e.pool.Acquire()
+		key, err := e.pool.Acquire(gateway)
 		if err != nil {
 			return nil, "", fmt.Errorf("acquire key: %w", err)
 		}
 		if err := e.st.SetReviewExecution(r.ID, r.ExecutionGeneration, model, key.ID, r.ServiceLeaseOwner, r.ClaimFence); err != nil {
 			return nil, "", fmt.Errorf("record review execution: %w", err)
 		}
-		e.recordEvent(r.ID, "prepare", fmt.Sprintf("Acquired Zen credential %q", key.Label))
+		e.recordEvent(r.ID, "prepare", fmt.Sprintf("Acquired %s credential %q", gateway, key.Label))
 		if err := e.reviewSideEffectError(ctx, r); err != nil {
 			return nil, "", err
 		}
@@ -850,7 +851,7 @@ func (e *Engine) runWithPool(ctx context.Context, token string, r *store.Review,
 		if err := e.pool.Exhausted(key.ID); err != nil {
 			return key, "", fmt.Errorf("cool exhausted key: %w", err)
 		}
-		log.Warn("zen key exhausted, cooling down", "key_id", key.ID)
+		log.Warn("gateway key exhausted, cooling down", "gateway", gateway, "key_id", key.ID)
 		lastErr = runErr
 	}
 	return nil, "", lastErr

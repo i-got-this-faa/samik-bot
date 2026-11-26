@@ -167,7 +167,7 @@ func TestOrcaCallbackExchangesAndPoolsTheKey(t *testing.T) {
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("pooled keys = %+v, %v", keys, err)
 	}
-	if keys[0].Label != "orcarouter-connect" || keys[0].Last4 != "1234" {
+	if keys[0].Label != "orcarouter-connect" || keys[0].Last4 != "1234" || keys[0].Gateway != "orcarouter" {
 		t.Fatalf("pooled key = %+v", keys[0])
 	}
 }

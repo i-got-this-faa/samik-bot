@@ -89,10 +89,14 @@ interface ReviewDetailResponse {
   events?: ReviewEvent[] | null;
 }
 
+export type KeyGateway = "opencode" | "orcarouter";
+export type KeyPatch = { disabled: boolean } | { gateway: KeyGateway };
+
 export interface ZenKey {
   id: number;
   label: string;
   last4: string;
+  gateway: KeyGateway | "";
   requests_today: number;
   cooldown_until: string | null;
   disabled: boolean;
@@ -112,6 +116,7 @@ export interface KeyCreateResult {
   id: number;
   label: string;
   last4: string;
+  gateway: KeyGateway;
 }
 
 export interface ActionResult {
@@ -215,15 +220,15 @@ export const api = {
     };
   },
   keys: () => req<ZenKey[]>("/api/admin/keys"),
-  addKey: (label: string, secret: string) =>
+  addKey: (label: string, secret: string, gateway: KeyGateway) =>
     req<KeyCreateResult>("/api/admin/keys", {
       method: "POST",
-      body: JSON.stringify({ label, secret }),
+      body: JSON.stringify({ label, secret, gateway }),
     }),
-  patchKey: (id: number, disabled: boolean) =>
+  patchKey: (id: number, change: KeyPatch) =>
     req<ActionResult>(`/api/admin/keys/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ disabled }),
+      body: JSON.stringify(change),
     }),
   deleteKey: (id: number) =>
     req<ActionResult>(`/api/admin/keys/${id}`, {

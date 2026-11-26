@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Route as RootRoute } from "./__root";
 import { RequireUser } from "@/components/auth-gate";
 import { LoadingState, RequestError } from "@/components/query-state";
-import { api, getErrorMessage } from "@/lib/api";
+import { api, getErrorMessage, type KeyGateway, type KeyPatch } from "@/lib/api";
 import { userQueryKey, useCurrentUser, useUnauthorizedRedirect } from "@/lib/auth";
 import { formatDateTime } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -18,9 +18,14 @@ export const Route = createRoute({
   component: AdminKeys,
 });
 
+const gatewayOptions = [
+  { id: "opencode", name: "OpenCode Zen" },
+  { id: "orcarouter", name: "OrcaRouter" },
+] as const satisfies ReadonlyArray<{ id: KeyGateway; name: string }>;
+
 interface KeyPatchVariables {
   id: number;
-  disabled: boolean;
+  change: KeyPatch;
   label: string;
 }
 
@@ -53,6 +58,7 @@ function ZenKeyManager() {
   });
   const [label, setLabel] = useState("");
   const [secret, setSecret] = useState("");
+  const [gateway, setGateway] = useState<KeyGateway | "">("");
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
@@ -63,7 +69,7 @@ function ZenKeyManager() {
 
   const add = useMutation({
     // Keep the secret out of React Query's mutation cache while it is being submitted.
-    mutationFn: () => api.addKey(label.trim() || "zen-key", secret.trim()),
+    mutationFn: (issuer: KeyGateway) => api.addKey(label.trim(), secret.trim(), issuer),
     onMutate: () => {
       setNotice(null);
       setActionError(null);
@@ -81,17 +87,18 @@ function ZenKeyManager() {
     },
   });
   const patch = useMutation({
-    mutationFn: ({ id, disabled }: KeyPatchVariables) =>
-      api.patchKey(id, disabled),
+    mutationFn: ({ id, change }: KeyPatchVariables) => api.patchKey(id, change),
     onMutate: () => {
       setNotice(null);
       setActionError(null);
       setFailedAction(null);
     },
     onSuccess: (_, variables) => {
-      setNotice(
-        `Credential “${variables.label}” was ${variables.disabled ? "disabled" : "enabled"}.`,
-      );
+      if ("gateway" in variables.change) {
+        setNotice(`Gateway assigned to “${variables.label}”.`);
+      } else {
+        setNotice(`Credential “${variables.label}” was ${variables.change.disabled ? "disabled" : "enabled"}.`);
+      }
       void refreshKeys();
     },
     onError: (error, variables) => {
@@ -120,21 +127,19 @@ function ZenKeyManager() {
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const nextSecret = secret.trim();
-    if (!nextSecret) return;
-    add.mutate();
+    if (!secret.trim() || !gateway) return;
+    add.mutate(gateway);
   };
 
   const retryAction = () => {
     if (!failedAction) return;
 
     if (failedAction.kind === "add") {
-      const nextSecret = secret.trim();
-      if (!nextSecret) {
-        setActionError("Enter an API key before retrying.");
+      if (!secret.trim() || !gateway) {
+        setActionError("Select a gateway and enter an API key before retrying.");
         return;
       }
-      add.mutate();
+      add.mutate(gateway);
       return;
     }
     if (failedAction.kind === "patch") {
@@ -156,9 +161,8 @@ function ZenKeyManager() {
       <CardHeader>
         <CardTitle as="h1">Gateway credentials</CardTitle>
         <CardDescription>
-          API keys for the configured review gateway — OpenCode Zen for <code>opencode/…</code>{" "}
-          models, OrcaRouter for <code>orcarouter/…</code> models. Credential values are encrypted
-          at rest and never returned to the browser; only masked suffixes appear here.
+          Reviews use keys issued by the gateway for the selected model. Stored keys are encrypted,
+          and the dashboard shows their masked suffixes.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -171,7 +175,7 @@ function ZenKeyManager() {
           limits.
         </aside>
         <form className="grid gap-3" onSubmit={submit}>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto] sm:items-end">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] sm:items-end">
             <div className="grid gap-1.5">
               <label htmlFor="zen-key-label" className="text-sm font-medium">
                 Label <span className="font-normal text-zinc-500">(optional)</span>
@@ -187,6 +191,24 @@ function ZenKeyManager() {
                   clearAddError();
                 }}
               />
+            </div>
+            <div className="grid gap-1.5">
+              <label htmlFor="key-gateway" className="text-sm font-medium">Gateway</label>
+              <select
+                id="key-gateway"
+                className="h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm"
+                value={gateway}
+                required
+                disabled={add.isPending}
+                onChange={(event) => {
+                  const option = gatewayOptions.find(({ id }) => id === event.target.value);
+                  setGateway(option?.id ?? "");
+                  clearAddError();
+                }}
+              >
+                <option value="">Select a gateway</option>
+                {gatewayOptions.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+              </select>
             </div>
             <div className="grid gap-1.5">
               <label htmlFor="zen-key-secret" className="text-sm font-medium">
@@ -208,7 +230,7 @@ function ZenKeyManager() {
                 }}
               />
             </div>
-            <Button type="submit" disabled={!secret.trim() || add.isPending}>
+            <Button type="submit" disabled={!secret.trim() || !gateway || add.isPending}>
               {add.isPending ? "Adding…" : "Add key"}
             </Button>
           </div>
@@ -242,6 +264,7 @@ function ZenKeyManager() {
         ) : keys.data?.length ? (
           <ul className="divide-y divide-zinc-100" aria-label="Saved gateway credentials">
             {keys.data.map((key) => {
+              const issuer = gatewayOptions.find(({ id }) => id === key.gateway);
               const cooling =
                 key.cooldown_until != null && new Date(key.cooldown_until) > new Date();
               const cooldownLabel = key.cooldown_until ? formatDateTime(key.cooldown_until) : null;
@@ -257,6 +280,11 @@ function ZenKeyManager() {
                       <span className="text-zinc-500" aria-label={`Credential ending in ${key.last4}`}>
                         ••••{key.last4}
                       </span>
+                      {issuer ? (
+                        <Badge variant="outline">{issuer.name}</Badge>
+                      ) : (
+                        <Badge variant="warning">Gateway required</Badge>
+                      )}
                       <Badge variant="secondary">
                         {key.requests_today} {key.requests_today === 1 ? "request" : "requests"} today
                         {" "}(UTC)
@@ -264,6 +292,23 @@ function ZenKeyManager() {
                       {cooling && <Badge variant="warning">Temporarily unavailable</Badge>}
                       {key.disabled && <Badge variant="destructive">Disabled</Badge>}
                     </div>
+                    {!issuer && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-zinc-600">Assign the gateway that issued this key</span>
+                        {gatewayOptions.map(({ id, name }) => (
+                          <Button
+                            key={id}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={actionsDisabled}
+                            onClick={() => patch.mutate({ id: key.id, label: key.label, change: { gateway: id } })}
+                          >
+                            {name}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                     {cooling && cooldownLabel && (
                       <p className="mt-1 text-xs text-amber-800">Available after {cooldownLabel}</p>
                     )}
@@ -307,7 +352,7 @@ function ZenKeyManager() {
                         onClick={() =>
                           patch.mutate({
                             id: key.id,
-                            disabled: !key.disabled,
+                            change: { disabled: !key.disabled },
                             label: key.label,
                           })
                         }

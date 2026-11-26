@@ -131,7 +131,7 @@ func Preflight(bin, runtimeDir, bubblewrapBin, engine, model string) error {
 	// request.
 	probes := [][]string{{"--version"}, {"run", "--standalone", "--help"}}
 	if engine == EnginePi {
-		probes = [][]string{{"--version"}, {"--list-models", gatewayProviderForModel(model)}}
+		probes = [][]string{{"--version"}, {"--list-models", GatewayProviderForModel(model)}}
 	}
 	for _, probe := range probes {
 		files, err := newSandboxFiles(tmp, "preflight", engine, model)
@@ -385,7 +385,7 @@ func newSandboxFiles(tmp, apiKey, engine, model string) (*sandboxFiles, error) {
 	if err := os.MkdirAll(secretsDir, 0o700); err != nil {
 		return nil, err
 	}
-	provider := gatewayProviderForModel(model)
+	provider := GatewayProviderForModel(model)
 	if engine == EnginePi {
 		// pi reads global settings and credentials from PI_CODING_AGENT_DIR:
 		// an empty trust decision plus a disabled telemetry ping.

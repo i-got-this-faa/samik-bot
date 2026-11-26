@@ -713,8 +713,8 @@ func TestGatewayProviderForModel(t *testing.T) {
 		"":                     ProviderOpenCode,
 	}
 	for model, want := range cases {
-		if got := gatewayProviderForModel(model); got != want {
-			t.Fatalf("gatewayProviderForModel(%q) = %q, want %q", model, got, want)
+		if got := GatewayProviderForModel(model); got != want {
+			t.Fatalf("GatewayProviderForModel(%q) = %q, want %q", model, got, want)
 		}
 	}
 }

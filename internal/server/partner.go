@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/jR4dh3y/samik-bot/internal/orca"
+	"github.com/jR4dh3y/samik-bot/internal/runner"
 	"github.com/jR4dh3y/samik-bot/internal/store"
 )
 
@@ -80,7 +81,7 @@ func (s *Server) handleOrcaCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, partnerRedirectPath+"?error=exchange", http.StatusFound)
 		return
 	}
-	if _, err := s.st.AddKey("orcarouter-connect", key); err != nil {
+	if _, err := s.st.AddKey("orcarouter-connect", key, runner.ProviderOrcaRouter); err != nil {
 		s.log.Error("store connected orca key", "err", err)
 		http.Redirect(w, r, partnerRedirectPath+"?error=store", http.StatusFound)
 		return
