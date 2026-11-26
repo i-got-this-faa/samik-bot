@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS findings (
 	body_md           TEXT NOT NULL,
 	posted_comment_id INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_findings_review ON findings(review_id);
 CREATE TABLE IF NOT EXISTS review_events (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	review_id  INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,

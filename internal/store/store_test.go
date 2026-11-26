@@ -448,6 +448,10 @@ func TestReviewLifecyclePersistsDurablePublication(t *testing.T) {
 	if err != nil || len(findings) != 1 || findings[0].PostedCommentID != 444 {
 		t.Fatalf("findings = %+v, %v", findings, err)
 	}
+	counts, err := s.FindingCounts(t.Context(), []int64{r.ID, r.ID + 1})
+	if err != nil || counts[r.ID] != 1 || counts[r.ID+1] != 0 {
+		t.Fatalf("finding counts = %v, %v", counts, err)
+	}
 	got, err := s.Review(r.ID)
 	if err != nil {
 		t.Fatal(err)
